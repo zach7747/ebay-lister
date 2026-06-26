@@ -115,6 +115,37 @@ function esc(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/** Convert plain-text listing description to HTML for eBay. */
+function textToHtml(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let inList = false;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    // Close list if we hit a non-bullet, non-empty line
+    if (inList && (!line.startsWith("- ") && line !== "")) {
+      out.push("</ul>");
+      inList = false;
+    }
+
+    if (line === "") {
+      // Blank line — skip (spacing handled by CSS/margins)
+    } else if (line.startsWith("- ")) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${esc(line.slice(2))}</li>`);
+    } else if (/^(Style|Measurements|Condition):/i.test(line)) {
+      out.push(`<p><b>${esc(line)}</b></p>`);
+    } else {
+      out.push(`<p>${esc(line)}</p>`);
+    }
+  }
+
+  if (inList) out.push("</ul>");
+  return out.join("");
+}
+
 function computeBufferedPrice(raw: number | string | undefined): number {
   let base = typeof raw === "string" ? parseFloat(raw) : raw ?? 0;
   if (!base || Number.isNaN(base) || base <= 0) base = 29.99;
@@ -321,7 +352,7 @@ async function addItemViaTradingApi(
 <AddItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <Item>
     <Title>${esc(item.title.slice(0, 80))}</Title>
-    <Description><![CDATA[${item.description}]]></Description>
+    <Description><![CDATA[${textToHtml(item.description)}]]></Description>
     <PrimaryCategory><CategoryID>${esc(item.categoryId)}</CategoryID></PrimaryCategory>
     <ConditionID>${item.conditionId}</ConditionID>${item.conditionDescription ? `
     <ConditionDescription>${esc(item.conditionDescription)}</ConditionDescription>` : ""}
