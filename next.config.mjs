@@ -18,6 +18,14 @@ const nextConfig = {
   async headers() {
     return [
       {
+        // Force browsers to revalidate Next.js chunks on every visit so
+        // deploys are picked up immediately without a hard-refresh.
+        source: "/_next/static/(.*)",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, must-revalidate" },
+        ],
+      },
+      {
         source: "/(.*)",
         headers: [
           // Keep this private deployment out of search results. Remove if you

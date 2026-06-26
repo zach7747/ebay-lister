@@ -1,29 +1,38 @@
-// Encrypted eBay connection stored in an httpOnly cookie.
+// Encrypted eBay connection stored SERVER-SIDE (not in cookies).
 //
-// We keep only the long-lived refresh token (encrypted with SESSION_SECRET).
-// Short-lived access tokens are minted on demand from it, so nothing sensitive
-// is exposed to the browser and there's no database to manage.
+// The sealed token is written to ~/ebay-lister-connection so it survives
+// across browsers and devices. Any device hitting the app shares the same
+// eBay account connection.
+//
+// Cookies are still set as a fallback but the server file is authoritative.
 
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
 import { refreshAccessToken } from "./oauth";
+import { logError, logInfo } from "@/lib/logger";
 
 export const EBAY_COOKIE = "ebay_conn";
 export const EBAY_STATE_COOKIE = "ebay_oauth_state";
-// Browsers cap persistent cookies at ~400 days; eBay refresh tokens last ~18mo.
 export const EBAY_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
+
+const CONNECTION_FILE = join(
+  process.env.HOME || "/root",
+  "ebay-lister-connection"
+);
 
 interface Connection {
   refreshToken: string;
   refreshExpiresAt: number; // epoch ms
 }
 
+// ── Encryption ───────────────────────────────────────────────────────────
+
 async function aesKey(): Promise<CryptoKey> {
   const secret = process.env.SESSION_SECRET;
   if (!secret) {
-    throw new Error("SESSION_SECRET is not set. Add it in Vercel env vars.");
+    throw new Error("SESSION_SECRET is not set. Add it in .env.local.");
   }
   if (secret.length < 32) {
-    // A short human-chosen passphrase would make the cookie encryption
-    // brute-forceable. Require real entropy.
     throw new Error(
       'SESSION_SECRET must be at least 32 characters. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
     );
@@ -70,18 +79,86 @@ export async function openConnection(
   }
 }
 
+// ── Server-side file storage ─────────────────────────────────────────────
+
+function saveToFile(sealed: string): void {
+  try {
+    mkdirSync(dirname(CONNECTION_FILE), { recursive: true });
+    writeFileSync(CONNECTION_FILE, sealed, "utf-8");
+    logInfo("session", "eBay connection saved to server file");
+  } catch (e) {
+    logError("session", "Failed to save eBay connection to file", e);
+  }
+}
+
+function loadFromFile(): string | undefined {
+  try {
+    return readFileSync(CONNECTION_FILE, "utf-8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function deleteFile(): void {
+  try {
+    unlinkSync(CONNECTION_FILE);
+  } catch {
+    // ignore
+  }
+}
+
+// ── Public API ───────────────────────────────────────────────────────────
+
 // Build a Connection from a fresh token-exchange response.
-export function connectionFromToken(refreshToken: string, refreshExpiresIn?: number): Connection {
+export function connectionFromToken(
+  refreshToken: string,
+  refreshExpiresIn?: number
+): Connection {
   const ttl = (refreshExpiresIn ?? 47304000) * 1000; // default ~18 months
   return { refreshToken, refreshExpiresAt: Date.now() + ttl };
 }
 
-// Mint a short-lived access token from the stored connection cookie value.
+// Save a sealed connection — writes to both server file and returns the
+// value to set as a cookie.
+export async function saveConnection(conn: Connection): Promise<string> {
+  const sealed = await sealConnection(conn);
+  saveToFile(sealed);
+  return sealed;
+}
+
+// Get a short-lived access token. Checks server file first, then cookie.
 export async function accessTokenFromCookie(
-  sealed: string | undefined
+  cookieValue: string | undefined
 ): Promise<string | null> {
-  const conn = await openConnection(sealed);
-  if (!conn) return null;
-  const token = await refreshAccessToken(conn.refreshToken);
-  return token.access_token;
+  // Prefer server-side file (shared across devices).
+  const serverSealed = loadFromFile();
+  const conn = await openConnection(serverSealed);
+  if (conn) {
+    const token = await refreshAccessToken(conn.refreshToken);
+    return token.access_token;
+  }
+
+  // Fallback: try the cookie value (for backwards compat).
+  const conn2 = await openConnection(cookieValue);
+  if (conn2) {
+    // Migrate to server file so other devices can use it.
+    saveToFile(await sealConnection(conn2));
+    const token = await refreshAccessToken(conn2.refreshToken);
+    return token.access_token;
+  }
+
+  return null;
+}
+
+// Check if eBay is connected (server file or cookie).
+export async function isConnected(
+  cookieValue: string | undefined
+): Promise<boolean> {
+  const serverSealed = loadFromFile();
+  if (serverSealed) {
+    const conn = await openConnection(serverSealed);
+    if (conn) return true;
+  }
+  const conn = await openConnection(cookieValue);
+  return conn !== null;
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { EBAY_COOKIE, accessTokenFromCookie } from "@/lib/ebay/session";
 import { guardApiRequest } from "@/lib/api-guard";
 import { fetchAccountSetup, publishListing } from "@/lib/ebay/publish";
+import { logError, logInfo } from "@/lib/logger";
 import type { PublishInput } from "@/lib/ebay/publish";
 
 // Photo upload + several eBay calls + recovery loops — give it room.
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest) {
   try {
     accessToken = await accessTokenFromCookie(req.cookies.get(EBAY_COOKIE)?.value);
   } catch (e) {
+    logError("/api/ebay/publish", "Token minting failed", e);
     return NextResponse.json({ success: false, error: (e as Error).message }, { status: 500 });
   }
   if (!accessToken) {
@@ -40,11 +42,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  logInfo("/api/ebay/publish", `Publishing SKU ${body.sku} (${body.images.length} images)`);
+
   try {
     const setup = await fetchAccountSetup(accessToken);
     const result = await publishListing(accessToken, setup, body);
+    if (result.success) {
+      logInfo("/api/ebay/publish", `Published SKU ${body.sku} → listing ${result.listingId}`);
+    } else {
+      logError("/api/ebay/publish", `Publish failed for SKU ${body.sku}: ${result.error}`);
+    }
     return NextResponse.json(result, { status: result.success ? 200 : 502 });
   } catch (e) {
+    logError("/api/ebay/publish", `Publish error for SKU ${body.sku}`, e);
     return NextResponse.json(
       { success: false, sku: body.sku, error: (e as Error).message },
       { status: 500 }

@@ -58,6 +58,8 @@ interface ListingCardProps {
   onEdit: (groupId: string, patch: Partial<ListingResult>) => void;
   onRetry: (groupId: string) => void;
   onPost: (groupId: string) => void;
+  onSaveToDraft?: (groupId: string) => void;
+  draftSaved?: boolean;
 }
 
 export function ListingCard({
@@ -67,6 +69,8 @@ export function ListingCard({
   onEdit,
   onRetry,
   onPost,
+  onSaveToDraft,
+  draftSaved,
 }: ListingCardProps) {
   const [open, setOpen] = useState(true);
   const listing = group.listing;
@@ -74,7 +78,7 @@ export function ListingCard({
 
   const specifics = useMemo(() => {
     const entries = Object.entries(listing?.item_specifics ?? {});
-    return entries.filter(([k, v]) => v && v.trim() !== "" && !k.startsWith("---"));
+    return entries.filter(([k, v]) => v != null && String(v).trim() !== "" && !k.startsWith("---"));
   }, [listing?.item_specifics]);
 
   const titleLen = listing?.title?.length ?? 0;
@@ -135,11 +139,11 @@ export function ListingCard({
                 {titleLen}/{TITLE_LIMIT}
               </span>
             </label>
-            <input
-              type="text"
+            <textarea
               className="title-input"
               value={listing.title}
               onChange={(e) => onEdit(group.id, { title: e.target.value })}
+              rows={2}
             />
             <div className="copy-row">
               <CopyButton text={listing.title} label="title" />
@@ -250,8 +254,8 @@ export function ListingCard({
                 </>
               ) : null}
             </p>
-          ) : ebayConnected ? (
-            <div className="post-row">
+          ) : (
+            <div className="post-row" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
               <button
                 type="button"
                 className="btn btn-primary"
@@ -263,15 +267,23 @@ export function ListingCard({
                     <span className="spinner" aria-hidden="true" /> Posting to eBay…
                   </>
                 ) : (
-                  "🚀 Post this to eBay"
+                  "🚀 Publish to eBay"
                 )}
               </button>
+              {onSaveToDraft && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => onSaveToDraft(group.id)}
+                  disabled={draftSaved}
+                >
+                  {draftSaved ? "✅ Saved to drafts" : "💾 Save to Drafts"}
+                </button>
+              )}
               {group.postStatus === "error" && group.postError && (
-                <p className="post-result err">⚠️ {group.postError}</p>
+                <p className="post-result err" style={{ width: "100%" }}>⚠️ {group.postError}</p>
               )}
             </div>
-          ) : (
-            <p className="post-hint">Connect eBay (top of page) to post this listing.</p>
           )}
         </div>
       )}

@@ -68,6 +68,7 @@ export function refreshAccessToken(refreshToken: string): Promise<TokenResponse>
   return postToken(creds, {
     grant_type: "refresh_token",
     refresh_token: refreshToken,
-    scope: EBAY_SCOPES,
+    // Don't send scope — eBay uses the scopes from the original authorization.
+    // Sending new/extra scopes here causes "invalid_scope" errors.
   });
 }

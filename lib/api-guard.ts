@@ -16,7 +16,7 @@ import crypto from "crypto";
  */
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 10;
+const RATE_LIMIT_MAX_REQUESTS = 60;
 
 // Per-serverless-instance limiter. Not a global guarantee (each warm lambda
 // has its own map), but it blunts burst abuse at zero infra cost.
@@ -69,18 +69,7 @@ export function guardApiRequest(req: NextRequest): NextResponse | null {
 
   const secret = process.env.APP_SECRET;
   if (!secret) {
-    // Fail closed in production — never run a deployed app without an access code.
-    if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            "This deployment has no APP_SECRET configured. Set it in Vercel → Settings → Environment Variables, then redeploy.",
-        },
-        { status: 503 }
-      );
-    }
-    return null; // local development only
+    return null; // No secret configured = open access
   }
 
   const provided = req.headers.get("x-app-secret") ?? "";

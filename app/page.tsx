@@ -7,6 +7,8 @@ import { buildSku } from "@/lib/sku";
 import { EbayConnect } from "./EbayConnect";
 import { ReviewBoard } from "./ReviewBoard";
 import { ListingsView } from "./ListingsView";
+import { DraftsView } from "./DraftsView";
+import { saveSession, loadSession, clearSession } from "@/lib/persist";
 import type {
   AnalyzeResponse,
   ItemGroup,
@@ -15,7 +17,7 @@ import type {
   SortResponse,
 } from "@/lib/types";
 
-type Step = "upload" | "review" | "listings";
+type Step = "upload" | "review" | "listings" | "drafts";
 // Keep a whole batch's sort payload comfortably under Vercel's 4.5 MB request
 // limit (sort sends small thumbnails for every photo at once).
 const MAX_PHOTOS = 100;
@@ -72,7 +74,50 @@ export default function Home() {
   const [sorting, setSorting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ebayConnected, setEbayConnected] = useState(false);
+  const [customInstructions, setCustomInstructions] = useState("");
+  const [showInstructions, setShowInstructions] = useState(false);
+  const [savedDraftIds, setSavedDraftIds] = useState<Set<string>>(new Set());
+  const instructionsLoaded = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── Restore session on mount ─────────────────────────────
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    loadSession().then((saved) => {
+      if (!saved) return;
+      // Only restore if saved within the last 24 hours.
+      if (Date.now() - saved.savedAt > 24 * 60 * 60 * 1000) {
+        clearSession();
+        return;
+      }
+      setPhotos(Array.isArray(saved.photos) ? saved.photos : []);
+      setBinPrefix(saved.binPrefix || "");
+      setStep((saved.step || "upload") as Step);
+      setGroups(Array.isArray(saved.groups) ? (saved.groups as ItemGroup[]).map((g) => ({ ...g, photoIds: Array.isArray(g.photoIds) ? g.photoIds : [] })) : []);
+      setOrphanIds(Array.isArray(saved.orphanIds) ? saved.orphanIds : []);
+    });
+  }, []);
+
+  // ── Save session on change (debounced) ───────────────────
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => {
+    if (!restoredRef.current) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveSession({
+        id: "current",
+        photos,
+        binPrefix,
+        step,
+        groups,
+        orphanIds,
+        savedAt: Date.now(),
+      });
+    }, 500);
+    return () => clearTimeout(saveTimer.current);
+  }, [photos, binPrefix, step, groups, orphanIds]);
 
   const photoMap = useMemo(() => {
     const m = new Map<string, Photo>();
@@ -99,6 +144,29 @@ export default function Home() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  // Load custom listing instructions from server.
+  useEffect(() => {
+    if (instructionsLoaded.current) return;
+    instructionsLoaded.current = true;
+    fetch("/api/instructions")
+      .then((r) => r.json())
+      .then((d) => { if (d.text) setCustomInstructions(d.text); })
+      .catch(() => {});
+  }, []);
+
+  // Save custom instructions to server (debounced).
+  useEffect(() => {
+    if (!instructionsLoaded.current) return;
+    const t = setTimeout(() => {
+      fetch("/api/instructions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: customInstructions }),
+      }).catch(() => {});
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [customInstructions]);
 
   // ── Upload ──────────────────────────────────────────────
   const addFiles = useCallback(async (fileList: FileList | null) => {
@@ -243,7 +311,7 @@ export default function Home() {
         )
       );
       try {
-        const res = await apiPost("/api/analyze", { profile: "auto", images: imgs });
+        const res = await apiPost("/api/analyze", { profile: "auto", images: imgs, customInstructions });
         const data = (await readJson(res)) as AnalyzeResponse;
         if (!data.ok || !data.listing) {
           throw new Error(data.error || "Could not write this listing.");
@@ -302,6 +370,7 @@ export default function Home() {
           sku: group.sku,
           listing: group.listing,
           images,
+          draft: false,
         });
         const data = (await readJson(res)) as {
           success: boolean;
@@ -339,6 +408,63 @@ export default function Home() {
     }
   };
 
+  // ── Save to drafts ───────────────────────────────────────
+  const saveToDraft = useCallback(
+    async (groupId: string) => {
+      const group = groupsRef.current.find((g) => g.id === groupId);
+      if (!group || !group.listing) return;
+
+      // Collect photo data for this group
+      const photos = group.photoIds
+        .map((id) => photoMap.get(id))
+        .filter((p): p is Photo => Boolean(p))
+        .map((p) => ({
+          previewUrl: p.previewUrl,
+          data: p.data,
+          mediaType: p.mediaType,
+        }));
+
+      const draft = {
+        id: group.id,
+        sku: group.sku,
+        name: group.name,
+        listing: group.listing,
+        photos,
+        status: "pending" as const,
+        createdAt: Date.now(),
+      };
+
+      try {
+        const code = localStorage.getItem("listing-writer:access-code");
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (code) headers["x-app-secret"] = code;
+        const res = await fetch("/api/ebay/drafts", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(draft),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          setSavedDraftIds((prev) => new Set(prev).add(groupId));
+        }
+      } catch {
+        // Silently fail — the listing still exists in the current session
+      }
+    },
+    [photoMap]
+  );
+
+  const saveAllToDrafts = async () => {
+    const ready = groups
+      .filter((g) => g.status === "done" && !savedDraftIds.has(g.id))
+      .map((g) => g.id);
+    for (const id of ready) {
+      await saveToDraft(id);
+    }
+  };
+
   const usableGroups = useMemo(
     () => groups.filter((g) => g.photoIds.length > 0),
     [groups]
@@ -347,14 +473,39 @@ export default function Home() {
   return (
     <main className="wrap">
       <header className="masthead">
-        <span className="logo-mark" aria-hidden="true">
-          🪄
-        </span>
+        <span className="logo-mark" aria-hidden="true">🪄</span>
         <div>
           <h1>Listing Writer</h1>
-          <p>Upload a pile of photos · auto-sort into items · write every listing.</p>
+          <p>Upload a pile of photos • auto-sort into items • write every listing</p>
         </div>
       </header>
+
+      <div className="top-actions">
+        {step !== "drafts" && (
+          <button
+            type="button"
+            className="btn-pill"
+            onClick={() => setStep("drafts")}
+          >
+            <span className="pill-icon">📋</span> Drafts
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn-pill"
+          onClick={() => {
+            clearSession();
+            setPhotos([]);
+            setBinPrefix("");
+            setStep("upload");
+            setGroups([]);
+            setOrphanIds([]);
+            setSavedDraftIds(new Set());
+          }}
+        >
+          <span className="pill-icon">🗑️</span> Start over
+        </button>
+      </div>
 
       <EbayConnect />
 
@@ -396,6 +547,26 @@ export default function Home() {
                 … in order, so you can find it in the bin later. You can edit any
                 SKU after sorting.
               </span>
+            </div>
+
+            <div className="field">
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ fontSize: "0.85em", padding: "4px 0", marginBottom: 4 }}
+                onClick={() => setShowInstructions(!showInstructions)}
+              >
+                {showInstructions ? "▾" : "▸"} Custom listing instructions
+              </button>
+              {showInstructions && (
+                <textarea
+                  className="instructions-textarea"
+                  placeholder="e.g. Always mention 'vintage' in titles. Use the word 'boutique'. Emphasize handmade craftsmanship. Target keywords: boho, cottagecore, Y2K."
+                  value={customInstructions}
+                  onChange={(e) => setCustomInstructions(e.target.value)}
+                  rows={4}
+                />
+              )}
             </div>
 
             <div
@@ -512,14 +683,25 @@ export default function Home() {
           onRetry={writeGroup}
           onPost={postGroup}
           onPostAll={postAll}
+          onSaveToDraft={saveToDraft}
+          onSaveAllToDrafts={saveAllToDrafts}
+          savedDraftIds={savedDraftIds}
+          onShowDrafts={() => setStep("drafts")}
           onBack={() => setStep("review")}
         />
       )}
 
-      <p className="footnote">
-        Your photos are sent securely to sort and write listings, and are not
-        stored. One-click posting to eBay is coming in the next phase.
-      </p>
+      {step === "drafts" && (
+        <DraftsView onBack={() => setStep("listings")} />
+      )}
+
+      <div className="security-notice">
+        <span className="security-icon" aria-hidden="true">🛡️</span>
+        <p>
+          Your photos are sent securely to sort and write listings, and are not
+          stored. Your data stays private.
+        </p>
+      </div>
     </main>
   );
 }

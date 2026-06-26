@@ -92,15 +92,24 @@ export function ReviewBoard({
   return (
     <section className="panel" aria-labelledby="review-heading">
       <div className="result-head">
-        <h3 id="review-heading">
+        <h3 id="review-heading" style={{ fontFamily: "var(--font-display)" }}>
           {groups.length} item{groups.length === 1 ? "" : "s"} found
         </h3>
-        <span className="badge">{totalPhotos} photos sorted</span>
+        <span className="badge" style={{ background: "#E5F5EE", color: "var(--color-primary)", textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.72rem", fontWeight: 700, padding: "4px 10px" }}>
+          {totalPhotos} photos sorted
+        </span>
       </div>
-      <p style={{ marginTop: 0, color: "var(--color-ink-soft)" }}>
+      <p className="review-desc" style={{ marginTop: 0 }}>
         Check the groupings below. Rename an item, or use the menu under any
         photo to move it to the right item. Then write all the listings at once.
       </p>
+      {groups.length === 0 && (
+        <div className="review-empty">
+          <span className="review-empty-icons" aria-hidden="true">✨ 📦 ✓</span>
+          <h4>No items yet</h4>
+          <p>Upload photos to get started</p>
+        </div>
+      )}
 
       <div className="board">
         {groups.map((group) => (
@@ -153,10 +162,10 @@ export function ReviewBoard({
       </div>
 
       {orphanIds.length > 0 && (
-        <article className="board-item needs-review">
-          <header className="board-item-head">
-            <strong>⚠️ Needs review ({orphanIds.length})</strong>
-            <span style={{ fontSize: "0.82rem", color: "var(--color-ink-faint)" }}>
+        <article className="board-item needs-review" style={{ marginTop: "1rem" }}>
+          <header className="board-item-head" style={{ flexDirection: "column", alignItems: "flex-start", gap: "4px" }}>
+            <strong style={{ fontSize: "15px" }}>⚠️ Needs review ({orphanIds.length})</strong>
+            <span style={{ fontSize: "0.82rem", color: "var(--color-text-secondary)" }}>
               These didn&rsquo;t clearly belong to one item — assign each below.
             </span>
           </header>
@@ -175,16 +184,18 @@ export function ReviewBoard({
         </article>
       )}
 
-      <div className="result-actions">
-        <button type="button" className="btn btn-ghost" onClick={onBack}>
+      <div className="result-actions" style={{ flexDirection: "column", gap: "12px", alignItems: "stretch" }}>
+        <div style={{ display: "flex", gap: "12px" }}>
+          <button type="button" className="btn-secondary-action" onClick={onBack}>
           ← Back to photos
-        </button>
-        <button type="button" className="btn btn-ghost" onClick={onAddGroup}>
-          ＋ New item
-        </button>
+          </button>
+          <button type="button" className="btn-secondary-action" onClick={onAddGroup}>
+            ＋ New item
+          </button>
+        </div>
         <button
           type="button"
-          className="btn btn-primary"
+          className="btn-write-listings"
           onClick={onWriteAll}
           disabled={usableGroups.length === 0}
         >

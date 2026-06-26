@@ -16,6 +16,10 @@ interface ListingsViewProps {
   onRetry: (groupId: string) => void;
   onPost: (groupId: string) => void;
   onPostAll: () => void;
+  onSaveToDraft?: (groupId: string) => void;
+  onSaveAllToDrafts?: () => void;
+  savedDraftIds?: Set<string>;
+  onShowDrafts?: () => void;
   onBack: () => void;
 }
 
@@ -27,6 +31,10 @@ export function ListingsView({
   onRetry,
   onPost,
   onPostAll,
+  onSaveToDraft,
+  onSaveAllToDrafts,
+  savedDraftIds,
+  onShowDrafts,
   onBack,
 }: ListingsViewProps) {
   const done = groups.filter((g) => g.status === "done").length;
@@ -51,51 +59,90 @@ export function ListingsView({
         </span>
       </div>
 
-      {ebayConnected && readyToPost > 0 && (
+      {readyToPost > 0 && (
         <div className="post-all-bar">
           <span>
             {posted > 0
               ? `${posted} posted · ${readyToPost} left`
-              : "Connected to eBay — post a single item to test first, or post them all."}
+              : `${readyToPost} listing${readyToPost > 1 ? "s" : ""} ready`}
           </span>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={onPostAll}
-            disabled={posting}
-          >
-            {posting ? (
-              <>
-                <span className="spinner" aria-hidden="true" /> Posting…
-              </>
-            ) : (
-              `🚀 Post all ${readyToPost} to eBay`
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            {onSaveAllToDrafts && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={onSaveAllToDrafts}
+              >
+                💾 Save all to Drafts
+              </button>
             )}
-          </button>
+            {ebayConnected && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={onPostAll}
+                disabled={posting}
+              >
+                {posting ? (
+                  <>
+                    <span className="spinner" aria-hidden="true" /> Posting…
+                  </>
+                ) : (
+                  `🚀 Publish all ${readyToPost} to eBay`
+                )}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      <div className="listing-list">
-        {groups.map((group) => (
-          <ListingCard
-            key={group.id}
-            group={group}
-            photoById={photoById}
-            ebayConnected={ebayConnected}
-            onEdit={onEdit}
-            onRetry={onRetry}
-            onPost={onPost}
-          />
-        ))}
-      </div>
+      {groups.length === 0 ? (
+        <div className="empty-state">
+          <span className="empty-icon" aria-hidden="true">✨</span>
+          <span style={{ fontSize: 28, marginBottom: 12, opacity: 0.7 }}>📦 ✓</span>
+          <h4>No listings yet</h4>
+          <p>Upload photos to get started</p>
+        </div>
+      ) : (
+        <div className="listing-list">
+          {groups.map((group) => (
+            <ListingCard
+              key={group.id}
+              group={group}
+              photoById={photoById}
+              ebayConnected={ebayConnected}
+              onEdit={onEdit}
+              onRetry={onRetry}
+              onPost={onPost}
+              onSaveToDraft={onSaveToDraft}
+              draftSaved={savedDraftIds?.has(group.id)}
+            />
+          ))}
+        </div>
+      )}
 
-      <div className="result-actions">
-        <button type="button" className="btn btn-ghost" onClick={onBack}>
-          ← Back to items
+      <div className="action-rows">
+        <button type="button" className="action-row" onClick={onBack}>
+          <span className="row-icon">←</span>
+          <span className="row-text">
+            <span className="row-title">Back to items</span>
+            <span className="row-sub">Return to your uploaded items</span>
+          </span>
+          <span className="row-chevron">›</span>
         </button>
+        {onShowDrafts && (
+          <button type="button" className="action-row" onClick={onShowDrafts}>
+            <span className="row-icon">📄</span>
+            <span className="row-text">
+              <span className="row-title">View Drafts</span>
+              <span className="row-sub">Continue working on drafts</span>
+            </span>
+            <span className="row-chevron">›</span>
+          </button>
+        )}
         <button
           type="button"
-          className="btn btn-ghost"
+          className="action-row"
           disabled={done === 0}
           onClick={() =>
             downloadFile(
@@ -105,23 +152,29 @@ export function ListingsView({
             )
           }
         >
-          ⬇️ Download spreadsheet (CSV)
-        </button>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={done === 0}
-          onClick={() =>
-            downloadFile(
-              "ebay-listings.json",
-              listingsToJson(groups),
-              "application/json"
-            )
-          }
-        >
-          ⬇️ Download all ({done})
+          <span className="row-icon">⬇️</span>
+          <span className="row-text">
+            <span className="row-title">Download spreadsheet (CSV)</span>
+            <span className="row-sub">Export your listings</span>
+          </span>
+          <span className="row-chevron">›</span>
         </button>
       </div>
+
+      <button
+        type="button"
+        className="btn-cta"
+        disabled={done === 0}
+        onClick={() =>
+          downloadFile(
+            "ebay-listings.json",
+            listingsToJson(groups),
+            "application/json"
+          )
+        }
+      >
+        ⬇️ Download all ({done})
+      </button>
 
       {allDone && (
         <p className="footnote" style={{ marginTop: "1.5rem" }}>

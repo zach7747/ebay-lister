@@ -1,19 +1,18 @@
-import type Anthropic from "@anthropic-ai/sdk";
-import { anthropicAuthError, parseModelJson } from "@/lib/anthropic";
+import type OpenAI from "openai";
+import { llmAuthError, parseModelJson } from "@/lib/llm";
 import {
   buildSortPrompt,
   buildVerifyGroupPrompt,
   buildVerifyMergePrompt,
   slugifyFolderName,
 } from "@/lib/prompts";
-import { labeledContent, toImageBlock, type WireImage } from "@/lib/images";
+import { labeledContent, toImageBlock, type WireImage, type ChatContentPart } from "@/lib/images";
 
-const GROUP_MODEL = "claude-sonnet-4-6";
-const CHECK_MODEL = "claude-sonnet-4-6";
+const GROUP_MODEL = "anthropic/claude-sonnet-4";
+const CHECK_MODEL = "anthropic/claude-haiku-4.5";
 const BATCH_SIZE = 10;
 
-// Concurrency caps — keep parallel bursts gentle so we don't trip Anthropic's
-// per-minute rate limits on big batches (which silently zeroed out sorting).
+// Concurrency caps
 const GROUP_CONCURRENCY = 2;
 const VERIFY_CONCURRENCY = 3;
 const MERGE_CONCURRENCY = 4;
@@ -31,9 +30,8 @@ export interface SortResult {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function firstText(resp: Anthropic.Message): string {
-  const block = resp.content.find((b) => b.type === "text");
-  return block && block.type === "text" ? block.text.trim() : "";
+function firstText(resp: OpenAI.ChatCompletion): string {
+  return resp.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
 // Run an async fn over items with a fixed concurrency cap, preserving order.
@@ -44,7 +42,7 @@ async function mapLimit<T, R>(
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async (): Promise<void> => {
     while (cursor < items.length) {
       const i = cursor++;
       results[i] = await fn(items[i], i);
@@ -54,20 +52,20 @@ async function mapLimit<T, R>(
   return results;
 }
 
-// Call Claude and parse JSON, retrying transient/rate-limit errors with backoff.
-async function claudeJson<T>(
-  client: Anthropic,
+// Call LLM and parse JSON, retrying transient/rate-limit errors with backoff.
+async function llmJson<T>(
+  client: OpenAI,
   model: string,
-  content: Anthropic.ContentBlockParam[],
+  content: ChatContentPart[],
   maxTokens: number,
   label: string
 ): Promise<T | null> {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const resp = await client.messages.create({
+      const resp = await client.chat.completions.create({
         model,
         max_tokens: maxTokens,
-        messages: [{ role: "user", content }],
+        messages: [{ role: "user", content: content as OpenAI.ChatCompletionContentPart[] }],
       });
       return parseModelJson<T>(firstText(resp));
     } catch (e) {
@@ -75,8 +73,7 @@ async function claudeJson<T>(
         e && typeof e === "object" && "status" in e
           ? Number((e as { status?: number }).status)
           : undefined;
-      // Account-level failures won't fix themselves on retry — surface them.
-      const fatal = anthropicAuthError(e);
+      const fatal = llmAuthError(e);
       if (fatal) throw fatal;
       const retryable = status === undefined || RETRYABLE_STATUS.has(status);
       if (attempt < 3 && retryable) {
@@ -92,11 +89,9 @@ async function claudeJson<T>(
   return null;
 }
 
-// Step 1 — group photos in independent batches of 10 (run a few at a time).
-// The merge step (step 3) reunites any item split across a batch boundary, so
-// batches don't need sequential context — letting us parallelize safely.
+// Step 1 — group photos in independent batches of 10.
 async function groupPhotos(
-  client: Anthropic,
+  client: OpenAI,
   images: WireImage[]
 ): Promise<{ name: string; indices: number[] }[]> {
   const total = images.length;
@@ -107,7 +102,7 @@ async function groupPhotos(
   }
 
   const perBatch = await mapLimit(batches, GROUP_CONCURRENCY, async (b) => {
-    const content: Anthropic.ContentBlockParam[] = [...labeledContent(b.batch, b.labelStart)];
+    const content: ChatContentPart[] = [...labeledContent(b.batch, b.labelStart)];
     const note =
       b.offset > 0
         ? ` (These are photos ${b.labelStart}–${b.labelEnd} of ${total} total. Group only the photos shown above.)`
@@ -116,7 +111,7 @@ async function groupPhotos(
       type: "text",
       text: buildSortPrompt(b.batch.length, b.labelStart, b.labelEnd, note),
     });
-    const data = await claudeJson<{
+    const data = await llmJson<{
       groups?: { folder_name?: string; photo_indices?: number[] }[];
     }>(client, GROUP_MODEL, content, 2000, `group ${b.labelStart}-${b.labelEnd}`);
 
@@ -137,7 +132,7 @@ async function groupPhotos(
 
 // Step 2 — verify each multi-photo group for accidentally mixed items.
 async function verifyGroups(
-  client: Anthropic,
+  client: OpenAI,
   images: WireImage[],
   groups: { name: string; indices: number[] }[]
 ): Promise<{ groups: { name: string; indices: number[] }[]; orphans: number[] }> {
@@ -147,7 +142,7 @@ async function verifyGroups(
     if (group.indices.length === 1) return group;
     const content = labeledContent(group.indices.map((i) => images[i]), 1);
     content.push({ type: "text", text: buildVerifyGroupPrompt(group.indices.length) });
-    const result = await claudeJson<{ valid?: boolean; keep_indices?: number[] }>(
+    const result = await llmJson<{ valid?: boolean; keep_indices?: number[] }>(
       client,
       CHECK_MODEL,
       content,
@@ -172,7 +167,7 @@ async function verifyGroups(
 
 // Step 3 — merge adjacent groups that are really one item split in two.
 async function mergeSplitGroups(
-  client: Anthropic,
+  client: OpenAI,
   images: WireImage[],
   groups: { name: string; indices: number[] }[]
 ): Promise<{ name: string; indices: number[] }[]> {
@@ -184,7 +179,7 @@ async function mergeSplitGroups(
     const aBlock = toImageBlock(images[group.indices[0]]);
     const bBlock = toImageBlock(images[next.indices[0]]);
     if (!aBlock || !bBlock) return false;
-    const content: Anthropic.ContentBlockParam[] = [
+    const content: ChatContentPart[] = [
       { type: "text", text: "Photo 1:" },
       aBlock,
       { type: "text", text: "--- Group B ---" },
@@ -192,7 +187,7 @@ async function mergeSplitGroups(
       bBlock,
       { type: "text", text: buildVerifyMergePrompt(group.indices.length, next.indices.length) },
     ];
-    const result = await claudeJson<{ merge?: boolean }>(
+    const result = await llmJson<{ merge?: boolean }>(
       client,
       CHECK_MODEL,
       content,
@@ -229,7 +224,7 @@ function uniqueNames(groups: { name: string; indices: number[] }[]): SortGroup[]
 }
 
 export async function sortPhotos(
-  client: Anthropic,
+  client: OpenAI,
   images: WireImage[]
 ): Promise<SortResult> {
   const grouped = await groupPhotos(client, images);

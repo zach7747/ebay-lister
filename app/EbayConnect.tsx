@@ -85,20 +85,10 @@ export function EbayConnect() {
   if (!status?.configured) return null;
 
   return (
-    <div className={`ebay-bar${status.connected ? " connected" : ""}`}>
+    <div className={`ebay-bar${status.connected ? " connected" : ""}`} style={{ background: "#E5F5EE", border: "1px solid #b5eadb", borderRadius: "18px", padding: "16px" }}>
       <span className="ebay-dot" aria-hidden="true" />
       {status.connected ? (
-        <>
-          <span className="ebay-label">eBay account connected</span>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={disconnect}
-            disabled={busy}
-          >
-            Disconnect
-          </button>
-        </>
+        <span className="ebay-label" style={{ color: "var(--color-primary)", fontWeight: 600 }}>✅ eBay account connected</span>
       ) : (
         <>
           <span className="ebay-label">

@@ -5,8 +5,9 @@ import {
   EBAY_COOKIE,
   EBAY_COOKIE_MAX_AGE,
   connectionFromToken,
-  sealConnection,
+  saveConnection,
 } from "@/lib/ebay/session";
+import { logInfo, logError } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -56,9 +57,10 @@ export async function POST(req: NextRequest) {
     if (!token.refresh_token) {
       throw new Error("eBay didn't return a refresh token (the code may have expired — try again).");
     }
-    const sealed = await sealConnection(
+    const sealed = await saveConnection(
       connectionFromToken(token.refresh_token, token.refresh_token_expires_in)
     );
+    logInfo("/api/ebay/connect", "eBay connected via manual paste, token saved to server");
     const res = NextResponse.json({ ok: true });
     res.cookies.set(EBAY_COOKIE, sealed, {
       httpOnly: true,

@@ -6,20 +6,18 @@ import {
   EBAY_COOKIE_MAX_AGE,
   EBAY_STATE_COOKIE,
   connectionFromToken,
-  sealConnection,
+  saveConnection,
 } from "@/lib/ebay/session";
+import { logError, logInfo } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
 function appUrl(req: NextRequest, path: string): URL {
-  // Prefer an explicit APP_URL; otherwise derive from the request.
   const base = process.env.APP_URL || req.nextUrl.origin;
   return new URL(path, base);
 }
 
 // eBay redirects the user back here with ?code=... after they consent.
-// Must stay reachable without the access code (it's a browser redirect from
-// eBay), so it is protected by the state cookie below plus the rate limiter.
 export async function GET(req: NextRequest) {
   const limited = rateLimitRequest(req);
   if (limited) return limited;
@@ -29,9 +27,14 @@ export async function GET(req: NextRequest) {
   const expectedState = req.cookies.get(EBAY_STATE_COOKIE)?.value;
 
   if (!code) {
+    logError("/api/ebay/callback", "No authorization code in redirect");
     return NextResponse.redirect(appUrl(req, "/?ebay=error&msg=No+authorization+code"));
   }
   if (!state || !expectedState || state !== expectedState) {
+    logError("/api/ebay/callback", "State mismatch", undefined, {
+      received: state,
+      expected: expectedState,
+    });
     return NextResponse.redirect(appUrl(req, "/?ebay=error&msg=State+mismatch"));
   }
 
@@ -40,10 +43,12 @@ export async function GET(req: NextRequest) {
     if (!token.refresh_token) {
       throw new Error("eBay did not return a refresh token.");
     }
-    const sealed = await sealConnection(
+    const sealed = await saveConnection(
       connectionFromToken(token.refresh_token, token.refresh_token_expires_in)
     );
+    logInfo("/api/ebay/callback", "eBay OAuth successful, token saved to server");
     const res = NextResponse.redirect(appUrl(req, "/?ebay=connected"));
+    // Also set cookie as a fallback for backwards compat.
     res.cookies.set(EBAY_COOKIE, sealed, {
       httpOnly: true,
       secure: true,
@@ -54,6 +59,7 @@ export async function GET(req: NextRequest) {
     res.cookies.delete(EBAY_STATE_COOKIE);
     return res;
   } catch (e) {
+    logError("/api/ebay/callback", "OAuth code exchange failed", e);
     const msg = encodeURIComponent((e as Error).message);
     return NextResponse.redirect(appUrl(req, `/?ebay=error&msg=${msg}`));
   }

@@ -1,11 +1,22 @@
-import type Anthropic from "@anthropic-ai/sdk";
-
 export type WireImage = { mediaType: string; data: string };
-export type ImageBlock = Anthropic.ImageBlockParam;
+
+// OpenAI-compatible image content part
+export type ImageBlock = {
+  type: "image_url";
+  image_url: { url: string };
+};
+
+// Text content part
+export type TextBlock = {
+  type: "text";
+  text: string;
+};
+
+export type ChatContentPart = TextBlock | ImageBlock;
+
 type MediaType = "image/jpeg" | "image/png" | "image/webp" | "image/gif";
 
-// Anthropic rejects any single image over 5 MB. Browser resizing keeps photos
-// far under this, but guard anyway so a stray large image is skipped cleanly.
+// Guard: 5 MB per image
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const ALLOWED_MEDIA = new Set(["image/jpeg", "image/png", "image/webp"]);
 
@@ -19,18 +30,17 @@ export function toImageBlock(img: WireImage | undefined): ImageBlock | null {
   const data = rawBase64(img.data);
   if (data.length * 0.75 > MAX_IMAGE_BYTES) return null;
   return {
-    type: "image",
-    source: { type: "base64", media_type: img.mediaType as MediaType, data },
+    type: "image_url",
+    image_url: { url: `data:${img.mediaType};base64,${data}` },
   };
 }
 
-// Build "Photo N:" text + image content blocks for a set of images, matching
-// _images_to_content() in the Python script.
+// Build "Photo N:" text + image content blocks for a set of images.
 export function labeledContent(
   images: WireImage[],
   labelStart = 1
-): Anthropic.ContentBlockParam[] {
-  const content: Anthropic.ContentBlockParam[] = [];
+): ChatContentPart[] {
+  const content: ChatContentPart[] = [];
   images.forEach((img, i) => {
     const block = toImageBlock(img);
     if (!block) return;

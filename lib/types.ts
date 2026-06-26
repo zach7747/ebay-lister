@@ -26,6 +26,7 @@ export interface AnalyzeRequestBody {
   // Browser-resized JPEG data URLs or raw base64 strings.
   images: { mediaType: string; data: string }[];
   profile: string;
+  customInstructions?: string;
 }
 
 export interface AnalyzeResponse {

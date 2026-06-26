@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardApiRequest } from "@/lib/api-guard";
-import { EBAY_COOKIE } from "@/lib/ebay/session";
+import { EBAY_COOKIE, deleteFile } from "@/lib/ebay/session";
 
 export const dynamic = "force-dynamic";
 
-// Forget the stored eBay connection.
+// Forget the stored eBay connection — clears both server file and cookie.
 export async function POST(req: NextRequest) {
   const denied = guardApiRequest(req);
   if (denied) return denied;
 
+  deleteFile();
   const res = NextResponse.json({ ok: true });
   res.cookies.delete(EBAY_COOKIE);
   return res;

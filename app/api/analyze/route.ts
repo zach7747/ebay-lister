@@ -1,20 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import type Anthropic from "@anthropic-ai/sdk";
-import { getClient, parseModelJson, AnthropicAuthError, anthropicAuthError } from "@/lib/anthropic";
+import type OpenAI from "openai";
+import { getClient, parseModelJson, LLMAuthError, llmAuthError } from "@/lib/llm";
 import { guardApiRequest, safeErrorResponse } from "@/lib/api-guard";
 import {
   PROFILE_ROUTER_PROMPT,
   buildProfiledAnalysisPrompt,
   normalizeItemProfile,
 } from "@/lib/prompts";
-import { toImageBlock, type ImageBlock } from "@/lib/images";
+import { toImageBlock, type ImageBlock, type ChatContentPart } from "@/lib/images";
+import { logError, logInfo } from "@/lib/logger";
 import type { AnalyzeRequestBody, ListingResult } from "@/lib/types";
 
 // Analysis can take 20-40s for a multi-photo item. Give it room.
 export const maxDuration = 60;
 
-const ANALYSIS_MODEL = "claude-opus-4-8";
-const ROUTER_MODEL = "claude-sonnet-4-6";
+const ANALYSIS_MODEL = "anthropic/claude-sonnet-4";
+const ROUTER_MODEL = "anthropic/claude-haiku-4.5";
 const MAX_IMAGES = 12;
 
 function toImageBlocks(images: AnalyzeRequestBody["images"]): ImageBlock[] {
@@ -28,7 +29,7 @@ function toImageBlocks(images: AnalyzeRequestBody["images"]): ImageBlock[] {
 
 // Mirrors route_item_profile(): honor a forced profile, else ask the model.
 async function routeProfile(
-  client: Anthropic,
+  client: OpenAI,
   imageBlocks: ImageBlock[],
   requested: string
 ): Promise<string> {
@@ -36,7 +37,7 @@ async function routeProfile(
   if (forced !== "auto") return forced;
 
   try {
-    const resp = await client.messages.create({
+    const resp = await client.chat.completions.create({
       model: ROUTER_MODEL,
       max_tokens: 300,
       messages: [
@@ -45,7 +46,7 @@ async function routeProfile(
           content: [
             ...imageBlocks,
             { type: "text", text: PROFILE_ROUTER_PROMPT },
-          ],
+          ] as OpenAI.ChatCompletionContentPart[],
         },
       ],
     });
@@ -55,15 +56,15 @@ async function routeProfile(
     return routed !== "auto" ? routed : "hard_goods";
   } catch (e) {
     // Auth/billing failures must surface, not silently fall back to a profile.
-    const fatal = anthropicAuthError(e);
+    const fatal = llmAuthError(e);
     if (fatal) throw fatal;
+    logError("/api/analyze", "Profile routing failed, defaulting to hard_goods", e);
     return "hard_goods";
   }
 }
 
-function firstText(resp: Anthropic.Message): string {
-  const block = resp.content.find((b) => b.type === "text");
-  return block && block.type === "text" ? block.text.trim() : "";
+function firstText(resp: OpenAI.ChatCompletion): string {
+  return resp.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
 export async function POST(req: NextRequest) {
@@ -95,10 +96,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let client: Anthropic;
+  let client: OpenAI;
   try {
     client = getClient();
   } catch (e) {
+    logError("/api/analyze", "LLM client init failed", e);
     return NextResponse.json(
       { ok: false, error: (e as Error).message },
       { status: 500 }
@@ -107,25 +109,27 @@ export async function POST(req: NextRequest) {
 
   try {
     const profile = await routeProfile(client, imageBlocks, body.profile);
-    const systemPrompt = buildProfiledAnalysisPrompt(profile);
+    let systemPrompt = buildProfiledAnalysisPrompt(profile);
 
-    // Retry up to 3 times, mirroring the Python analyze_photos() loop.
+    // Inject user's custom listing instructions (SEO keywords, tone, etc.)
+    if (body.customInstructions?.trim()) {
+      systemPrompt += `\n\nCUSTOM LISTING INSTRUCTIONS (follow these above all else):\n${body.customInstructions.trim()}`;
+    }
+
+    logInfo("/api/analyze", `Analyzing ${imageBlocks.length} images (profile: ${profile})`);
+
+    // Retry up to 3 times
     let lastErr: unknown = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const resp = await client.messages.create({
+        const resp = await client.chat.completions.create({
           model: ANALYSIS_MODEL,
           max_tokens: 3000,
-          // System prompt is large and identical across requests for the same
-          // profile — cache it to cut cost and latency.
-          system: [
-            {
-              type: "text",
-              text: systemPrompt,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
           messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
             {
               role: "user",
               content: [
@@ -134,28 +138,31 @@ export async function POST(req: NextRequest) {
                   type: "text",
                   text: "Analyze these photos and return the listing JSON now.",
                 },
-              ],
+              ] as OpenAI.ChatCompletionContentPart[],
             },
           ],
         });
         const listing = parseModelJson<ListingResult>(firstText(resp));
         listing.item_profile = profile;
+        logInfo("/api/analyze", `Listing written: "${listing.title}"`);
         return NextResponse.json({ ok: true, listing });
       } catch (err) {
-        const fatal = anthropicAuthError(err);
-        if (fatal) throw fatal; // auth/billing won't fix itself on retry
+        const fatal = llmAuthError(err);
+        if (fatal) throw fatal;
         lastErr = err;
         if (attempt < 2) {
+          logError(`/api/analyze`, `Attempt ${attempt + 1} failed, retrying`, err);
           await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
         }
       }
     }
     throw lastErr;
   } catch (e) {
-    if (e instanceof AnthropicAuthError) {
-      console.error("[analyze] auth/billing failure:", e.message);
+    if (e instanceof LLMAuthError) {
+      logError("/api/analyze", `Auth/billing failure: ${e.message}`, e);
       return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
     }
+    logError("/api/analyze", "Analysis failed after retries", e);
     return safeErrorResponse("analyze", e, "Something went wrong analyzing photos — please try again.");
   }
 }
