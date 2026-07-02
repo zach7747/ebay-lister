@@ -7,17 +7,17 @@ import { buildSku } from "@/lib/sku";
 import { EbayConnect } from "./EbayConnect";
 import { ReviewBoard } from "./ReviewBoard";
 import { ListingsView } from "./ListingsView";
-import { DraftsView } from "./DraftsView";
 import { saveSession, loadSession, clearSession } from "@/lib/persist";
 import type {
   AnalyzeResponse,
   ItemGroup,
   ListingResult,
   Photo,
+  ShippingOption,
   SortResponse,
 } from "@/lib/types";
 
-type Step = "upload" | "review" | "listings" | "drafts";
+type Step = "upload" | "review" | "listings";
 // Keep a whole batch's sort payload comfortably under Vercel's 4.5 MB request
 // limit (sort sends small thumbnails for every photo at once).
 const MAX_PHOTOS = 100;
@@ -76,7 +76,6 @@ export default function Home() {
   const [ebayConnected, setEbayConnected] = useState(false);
   const [customInstructions, setCustomInstructions] = useState("");
   const [showInstructions, setShowInstructions] = useState(false);
-  const [savedDraftIds, setSavedDraftIds] = useState<Set<string>>(new Set());
   const instructionsLoaded = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -352,6 +351,11 @@ export default function Home() {
       )
     );
 
+  const setShippingOption = (groupId: string, option: ShippingOption) =>
+    setGroups((prev) =>
+      prev.map((g) => (g.id === groupId ? { ...g, shippingOption: option } : g))
+    );
+
   const postGroup = useCallback(
     async (groupId: string) => {
       const group = groupsRef.current.find((g) => g.id === groupId);
@@ -371,6 +375,7 @@ export default function Home() {
           listing: group.listing,
           images,
           draft: false,
+          shippingOption: group.shippingOption ?? "light",
         });
         const data = (await readJson(res)) as {
           success: boolean;
@@ -408,63 +413,6 @@ export default function Home() {
     }
   };
 
-  // ── Save to drafts ───────────────────────────────────────
-  const saveToDraft = useCallback(
-    async (groupId: string) => {
-      const group = groupsRef.current.find((g) => g.id === groupId);
-      if (!group || !group.listing) return;
-
-      // Collect photo data for this group
-      const photos = group.photoIds
-        .map((id) => photoMap.get(id))
-        .filter((p): p is Photo => Boolean(p))
-        .map((p) => ({
-          previewUrl: p.previewUrl,
-          data: p.data,
-          mediaType: p.mediaType,
-        }));
-
-      const draft = {
-        id: group.id,
-        sku: group.sku,
-        name: group.name,
-        listing: group.listing,
-        photos,
-        status: "pending" as const,
-        createdAt: Date.now(),
-      };
-
-      try {
-        const code = localStorage.getItem("listing-writer:access-code");
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (code) headers["x-app-secret"] = code;
-        const res = await fetch("/api/ebay/drafts", {
-          method: "POST",
-          headers,
-          body: JSON.stringify(draft),
-        });
-        const data = await res.json();
-        if (data.ok) {
-          setSavedDraftIds((prev) => new Set(prev).add(groupId));
-        }
-      } catch {
-        // Silently fail — the listing still exists in the current session
-      }
-    },
-    [photoMap]
-  );
-
-  const saveAllToDrafts = async () => {
-    const ready = groups
-      .filter((g) => g.status === "done" && !savedDraftIds.has(g.id))
-      .map((g) => g.id);
-    for (const id of ready) {
-      await saveToDraft(id);
-    }
-  };
-
   const usableGroups = useMemo(
     () => groups.filter((g) => g.photoIds.length > 0),
     [groups]
@@ -481,15 +429,6 @@ export default function Home() {
       </header>
 
       <div className="top-actions">
-        {step !== "drafts" && (
-          <button
-            type="button"
-            className="btn-pill"
-            onClick={() => setStep("drafts")}
-          >
-            <span className="pill-icon">📋</span> Drafts
-          </button>
-        )}
         <button
           type="button"
           className="btn-pill"
@@ -500,7 +439,6 @@ export default function Home() {
             setStep("upload");
             setGroups([]);
             setOrphanIds([]);
-            setSavedDraftIds(new Set());
           }}
         >
           <span className="pill-icon">🗑️</span> Start over
@@ -683,16 +621,9 @@ export default function Home() {
           onRetry={writeGroup}
           onPost={postGroup}
           onPostAll={postAll}
-          onSaveToDraft={saveToDraft}
-          onSaveAllToDrafts={saveAllToDrafts}
-          savedDraftIds={savedDraftIds}
-          onShowDrafts={() => setStep("drafts")}
+          onShippingChange={setShippingOption}
           onBack={() => setStep("review")}
         />
-      )}
-
-      {step === "drafts" && (
-        <DraftsView onBack={() => setStep("listings")} />
       )}
 
       <div className="security-notice">

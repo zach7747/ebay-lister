@@ -23,6 +23,7 @@ export interface PersistedState {
     listing?: unknown;
     status: string;
     error?: string;
+    shippingOption?: string;
     postStatus?: string;
     listingId?: string;
     postError?: string;

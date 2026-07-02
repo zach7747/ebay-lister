@@ -18,6 +18,14 @@ import {
 import type { ListingResult } from "@/lib/types";
 import { logInfo, logError } from "@/lib/logger";
 
+// ── Shipping tiers ──────────────────────────────────────────────────────────
+
+const SHIPPING_TIERS: Record<string, { cost: number; weightOz: number; label: string }> = {
+  light:  { cost: 6.95,  weightOz: 8,  label: "Up to 8 oz" },
+  medium: { cost: 8.99,  weightOz: 16, label: "9-16 oz" },
+  heavy:  { cost: 11.79, weightOz: 32, label: "1-2 lbs" },
+};
+
 // ── Category map (category key → eBay leaf category ID) ─────────────────────
 
 const CATEGORY_MAP: Record<string, string> = {
@@ -333,6 +341,8 @@ async function addItemViaTradingApi(
     returnPolicyId: string;
     location: string;
     postalCode: string;
+    shippingCost: number;
+    shippingWeightOz: number;
   }
 ): Promise<{ success: boolean; itemId?: string; fees?: string; error?: string }> {
   // Build ItemSpecifics XML
@@ -374,13 +384,13 @@ async function addItemViaTradingApi(
       <ShippingServiceOptions>
         <ShippingServicePriority>1</ShippingServicePriority>
         <ShippingService>USPSFirstClass</ShippingService>
-        <ShippingServiceCost>5.99</ShippingServiceCost>
+        <ShippingServiceCost>${item.shippingCost.toFixed(2)}</ShippingServiceCost>
       </ShippingServiceOptions>
     </ShippingDetails>
     <PackageWeightAndSize>
-      <WeightMajor>1</WeightMajor>
-      <WeightMajorUnit>lbs</WeightMajorUnit>
-      <Length>12</Length>
+      <WeightMajor>${item.shippingWeightOz}</WeightMajor>
+      <WeightMajorUnit>oz</WeightMajorUnit>
+      <Length>13</Length>
       <Width>10</Width>
       <Height>2</Height>
       <DimensionsUnit>in</DimensionsUnit>
@@ -460,6 +470,7 @@ export interface PublishInput {
   listing: ListingResult;
   images: { mediaType: string; data: string }[];
   draft?: boolean;
+  shippingOption?: "light" | "medium" | "heavy";
 }
 
 export interface PublishResult {
@@ -521,7 +532,10 @@ export async function publishListing(
   const postalCode = process.env.EBAY_LOCATION_POSTAL_CODE || "98270";
   const location = process.env.EBAY_LOCATION || "Marysville, WA";
 
-  // 5. Try AddItem with the best category/condition; fall back if needed.
+  // 5. Resolve shipping tier
+  const tier = SHIPPING_TIERS[input.shippingOption || "light"] || SHIPPING_TIERS.light;
+
+  // 6. Try AddItem with the best category/condition; fall back if needed.
   const categoriesToTry = [catId, ...fallbacks];
 
   for (const tryCat of categoriesToTry) {
@@ -543,6 +557,8 @@ export async function publishListing(
         returnPolicyId: setup.returnPolicyId,
         location,
         postalCode,
+        shippingCost: tier.cost,
+        shippingWeightOz: tier.weightOz,
       });
 
       if (result.success) {

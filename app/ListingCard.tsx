@@ -1,7 +1,64 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { ItemGroup, ListingResult, Photo } from "@/lib/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ItemGroup, ListingResult, Photo, ShippingOption } from "@/lib/types";
+
+// Progress simulation for the writing state.
+// Typical analysis: ~2-3s routing + ~15-30s image analysis + ~3s parse.
+const WRITE_STEPS = [
+  { pct: 12, label: "Identifying item type…" },
+  { pct: 35, label: "Analyzing photos…" },
+  { pct: 60, label: "Writing listing…" },
+  { pct: 82, label: "Generating specifics…" },
+  { pct: 92, label: "Finalizing…" },
+];
+
+function useWriteProgress(status: ItemGroup["status"]) {
+  const [pct, setPct] = useState(0);
+  const [stepLabel, setStepLabel] = useState("");
+  const startRef = useRef(0);
+  const rafRef = useRef(0);
+
+  useEffect(() => {
+    if (status !== "writing") {
+      if (status === "done" && pct > 0) {
+        // Snap to 100% briefly, then stop.
+        setPct(100);
+        setStepLabel("Complete");
+      }
+      return;
+    }
+
+    startRef.current = Date.now();
+    const TOTAL_DURATION = 35_000; // 35s expected total
+
+    const tick = () => {
+      const elapsed = Date.now() - startRef.current;
+      const raw = Math.min(elapsed / TOTAL_DURATION, 0.95);
+      // Ease-out curve: fast start, slow finish
+      const eased = 1 - Math.pow(1 - raw, 2.5);
+      const currentPct = Math.round(eased * 92);
+      setPct(currentPct);
+
+      // Find current step label
+      for (let i = WRITE_STEPS.length - 1; i >= 0; i--) {
+        if (currentPct >= WRITE_STEPS[i].pct - 5) {
+          setStepLabel(WRITE_STEPS[i].label);
+          break;
+        }
+      }
+
+      if (raw < 0.95) {
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return { pct, stepLabel };
+}
 
 const TITLE_LIMIT = 80;
 
@@ -13,6 +70,12 @@ const CONDITIONS: { value: string; label: string }[] = [
   { value: "VERY_GOOD", label: "Pre-owned · Very good" },
   { value: "GOOD", label: "Pre-owned · Good" },
   { value: "FAIR", label: "Pre-owned · Fair" },
+];
+
+const SHIPPING_OPTIONS: { value: ShippingOption; label: string; detail: string }[] = [
+  { value: "light", label: "Up to 8 oz — $6.95", detail: "USPS Ground (≤8 oz)" },
+  { value: "medium", label: "9–16 oz — $8.99", detail: "USPS Ground (9–16 oz)" },
+  { value: "heavy", label: "1–2 lbs — $11.79", detail: "USPS Ground (1–2 lbs)" },
 ];
 
 function formatPrice(value: ListingResult["suggested_price"]): string {
@@ -58,8 +121,7 @@ interface ListingCardProps {
   onEdit: (groupId: string, patch: Partial<ListingResult>) => void;
   onRetry: (groupId: string) => void;
   onPost: (groupId: string) => void;
-  onSaveToDraft?: (groupId: string) => void;
-  draftSaved?: boolean;
+  onShippingChange?: (groupId: string, option: ShippingOption) => void;
 }
 
 export function ListingCard({
@@ -69,12 +131,12 @@ export function ListingCard({
   onEdit,
   onRetry,
   onPost,
-  onSaveToDraft,
-  draftSaved,
+  onShippingChange,
 }: ListingCardProps) {
   const [open, setOpen] = useState(true);
   const listing = group.listing;
   const cover = photoById(group.photoIds[0]);
+  const { pct, stepLabel } = useWriteProgress(group.status);
 
   const specifics = useMemo(() => {
     const entries = Object.entries(listing?.item_specifics ?? {});
@@ -97,9 +159,7 @@ export function ListingCard({
           </strong>
           <span className="listing-card-sub">
             {group.status === "writing" && (
-              <>
-                <span className="spinner small" aria-hidden="true" /> Writing…
-              </>
+              <span className="write-step-label">{stepLabel}</span>
             )}
             {group.status === "done" && (
               <>✅ {formatPrice(listing?.suggested_price)} · ready</>
@@ -129,6 +189,15 @@ export function ListingCard({
           </span>
         )}
       </header>
+
+      {(group.status === "writing" || (group.status === "done" && pct > 0)) && (
+        <div className="write-progress-track">
+          <div
+            className={`write-progress-bar${group.status === "done" ? " done" : ""}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
 
       {open && listing && group.status === "done" && (
         <div className="listing-card-body">
@@ -192,6 +261,24 @@ export function ListingCard({
                 {CONDITIONS.map((c) => (
                   <option key={c.value} value={c.value}>
                     {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="stat editable">
+              <label className="k" htmlFor={`ship-${group.id}`}>
+                Shipping
+              </label>
+              <select
+                id={`ship-${group.id}`}
+                value={group.shippingOption ?? "light"}
+                onChange={(e) =>
+                  onShippingChange?.(group.id, e.target.value as ShippingOption)
+                }
+              >
+                {SHIPPING_OPTIONS.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
                   </option>
                 ))}
               </select>
@@ -270,16 +357,6 @@ export function ListingCard({
                   "🚀 Publish to eBay"
                 )}
               </button>
-              {onSaveToDraft && (
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => onSaveToDraft(group.id)}
-                  disabled={draftSaved}
-                >
-                  {draftSaved ? "✅ Saved to drafts" : "💾 Save to Drafts"}
-                </button>
-              )}
               {group.postStatus === "error" && group.postError && (
                 <p className="post-result err" style={{ width: "100%" }}>⚠️ {group.postError}</p>
               )}

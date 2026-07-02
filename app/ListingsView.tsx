@@ -6,7 +6,7 @@ import {
   listingsToCsv,
   listingsToJson,
 } from "@/lib/export";
-import type { ItemGroup, ListingResult, Photo } from "@/lib/types";
+import type { ItemGroup, ListingResult, Photo, ShippingOption } from "@/lib/types";
 
 interface ListingsViewProps {
   groups: ItemGroup[];
@@ -16,10 +16,7 @@ interface ListingsViewProps {
   onRetry: (groupId: string) => void;
   onPost: (groupId: string) => void;
   onPostAll: () => void;
-  onSaveToDraft?: (groupId: string) => void;
-  onSaveAllToDrafts?: () => void;
-  savedDraftIds?: Set<string>;
-  onShowDrafts?: () => void;
+  onShippingChange?: (groupId: string, option: ShippingOption) => void;
   onBack: () => void;
 }
 
@@ -31,10 +28,7 @@ export function ListingsView({
   onRetry,
   onPost,
   onPostAll,
-  onSaveToDraft,
-  onSaveAllToDrafts,
-  savedDraftIds,
-  onShowDrafts,
+  onShippingChange,
   onBack,
 }: ListingsViewProps) {
   const done = groups.filter((g) => g.status === "done").length;
@@ -59,6 +53,20 @@ export function ListingsView({
         </span>
       </div>
 
+      {writing > 0 && (
+        <div className="batch-progress">
+          <div className="batch-progress-track">
+            <div
+              className="batch-progress-bar"
+              style={{ width: `${((done + groups.filter((g) => g.status === "error").length) / groups.length) * 100}%` }}
+            />
+          </div>
+          <span className="batch-progress-label">
+            {done} of {groups.length} complete
+          </span>
+        </div>
+      )}
+
       {readyToPost > 0 && (
         <div className="post-all-bar">
           <span>
@@ -67,15 +75,6 @@ export function ListingsView({
               : `${readyToPost} listing${readyToPost > 1 ? "s" : ""} ready`}
           </span>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            {onSaveAllToDrafts && (
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={onSaveAllToDrafts}
-              >
-                💾 Save all to Drafts
-              </button>
-            )}
             {ebayConnected && (
               <button
                 type="button"
@@ -114,8 +113,7 @@ export function ListingsView({
               onEdit={onEdit}
               onRetry={onRetry}
               onPost={onPost}
-              onSaveToDraft={onSaveToDraft}
-              draftSaved={savedDraftIds?.has(group.id)}
+              onShippingChange={onShippingChange}
             />
           ))}
         </div>
@@ -130,16 +128,6 @@ export function ListingsView({
           </span>
           <span className="row-chevron">›</span>
         </button>
-        {onShowDrafts && (
-          <button type="button" className="action-row" onClick={onShowDrafts}>
-            <span className="row-icon">📄</span>
-            <span className="row-text">
-              <span className="row-title">View Drafts</span>
-              <span className="row-sub">Continue working on drafts</span>
-            </span>
-            <span className="row-chevron">›</span>
-          </button>
-        )}
         <button
           type="button"
           className="action-row"
