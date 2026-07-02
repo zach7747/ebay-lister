@@ -13,6 +13,7 @@ import type {
   ItemGroup,
   ListingResult,
   Photo,
+  PlatformStatus,
   ShippingOption,
   SortResponse,
 } from "@/lib/types";
@@ -356,6 +357,21 @@ export default function Home() {
       prev.map((g) => (g.id === groupId ? { ...g, shippingOption: option } : g))
     );
 
+  const setCrossListStatus = (groupId: string, platform: "poshmark" | "depop", status: PlatformStatus, url?: string) =>
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id === groupId
+          ? {
+              ...g,
+              crossList: {
+                ...g.crossList,
+                [platform]: { status, ...(url ? { url } : {}) },
+              },
+            }
+          : g
+      )
+    );
+
   const postGroup = useCallback(
     async (groupId: string) => {
       const group = groupsRef.current.find((g) => g.id === groupId);
@@ -622,6 +638,7 @@ export default function Home() {
           onPost={postGroup}
           onPostAll={postAll}
           onShippingChange={setShippingOption}
+          onCrossListStatusChange={setCrossListStatus}
           onBack={() => setStep("review")}
         />
       )}

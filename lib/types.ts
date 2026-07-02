@@ -57,6 +57,13 @@ export type PostStatus = "idle" | "posting" | "posted" | "error";
 
 export type ShippingOption = "light" | "medium" | "heavy";
 
+export type PlatformStatus = "idle" | "listed" | "skipped";
+
+export interface PlatformListingStatus {
+  status: PlatformStatus;
+  url?: string;
+}
+
 export interface ItemGroup {
   id: string;
   sku: string; // bin reference, e.g. "K75-A"
@@ -70,4 +77,9 @@ export interface ItemGroup {
   postStatus?: PostStatus;
   listingId?: string;
   postError?: string;
+  // Cross-listing state
+  crossList?: {
+    poshmark?: PlatformListingStatus;
+    depop?: PlatformListingStatus;
+  };
 }

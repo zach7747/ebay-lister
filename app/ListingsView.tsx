@@ -6,7 +6,7 @@ import {
   listingsToCsv,
   listingsToJson,
 } from "@/lib/export";
-import type { ItemGroup, ListingResult, Photo, ShippingOption } from "@/lib/types";
+import type { ItemGroup, ListingResult, Photo, ShippingOption, PlatformStatus } from "@/lib/types";
 
 interface ListingsViewProps {
   groups: ItemGroup[];
@@ -17,6 +17,7 @@ interface ListingsViewProps {
   onPost: (groupId: string) => void;
   onPostAll: () => void;
   onShippingChange?: (groupId: string, option: ShippingOption) => void;
+  onCrossListStatusChange?: (groupId: string, platform: "poshmark" | "depop", status: PlatformStatus, url?: string) => void;
   onBack: () => void;
 }
 
@@ -29,6 +30,7 @@ export function ListingsView({
   onPost,
   onPostAll,
   onShippingChange,
+  onCrossListStatusChange,
   onBack,
 }: ListingsViewProps) {
   const done = groups.filter((g) => g.status === "done").length;
@@ -41,6 +43,11 @@ export function ListingsView({
   ).length;
   const allDone = writing === 0 && done > 0;
 
+  // Cross-list counts
+  const poshmarkListed = groups.filter((g) => g.crossList?.poshmark?.status === "listed").length;
+  const depopListed = groups.filter((g) => g.crossList?.depop?.status === "listed").length;
+  const hasCrossList = poshmarkListed > 0 || depopListed > 0;
+
   return (
     <section className="panel" aria-labelledby="listings-heading">
       <div className="result-head">
@@ -50,6 +57,7 @@ export function ListingsView({
           {writing > 0 ? ` · ${writing} writing` : ""}
           {failed > 0 ? ` · ${failed} failed` : ""}
           {posted > 0 ? ` · ${posted} posted` : ""}
+          {hasCrossList ? ` · ${poshmarkListed}/${done} Poshmark · ${depopListed}/${done} Depop` : ""}
         </span>
       </div>
 
@@ -114,6 +122,7 @@ export function ListingsView({
               onRetry={onRetry}
               onPost={onPost}
               onShippingChange={onShippingChange}
+              onCrossListStatusChange={onCrossListStatusChange}
             />
           ))}
         </div>

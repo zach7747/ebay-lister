@@ -27,6 +27,10 @@ export interface PersistedState {
     postStatus?: string;
     listingId?: string;
     postError?: string;
+    crossList?: {
+      poshmark?: { status: string; url?: string };
+      depop?: { status: string; url?: string };
+    };
   }[];
   orphanIds: string[];
   savedAt: number;

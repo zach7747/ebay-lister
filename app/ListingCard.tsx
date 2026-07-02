@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ItemGroup, ListingResult, Photo, ShippingOption } from "@/lib/types";
+import type { PlatformStatus } from "@/lib/types";
+import { CrossListPanel } from "./CrossListPanel";
 
 // Progress simulation for the writing state.
 // Typical analysis: ~2-3s routing + ~15-30s image analysis + ~3s parse.
@@ -122,6 +124,7 @@ interface ListingCardProps {
   onRetry: (groupId: string) => void;
   onPost: (groupId: string) => void;
   onShippingChange?: (groupId: string, option: ShippingOption) => void;
+  onCrossListStatusChange?: (groupId: string, platform: "poshmark" | "depop", status: PlatformStatus, url?: string) => void;
 }
 
 export function ListingCard({
@@ -132,6 +135,7 @@ export function ListingCard({
   onRetry,
   onPost,
   onShippingChange,
+  onCrossListStatusChange,
 }: ListingCardProps) {
   const [open, setOpen] = useState(true);
   const listing = group.listing;
@@ -363,6 +367,14 @@ export function ListingCard({
             </div>
           )}
         </div>
+      )}
+
+      {open && listing && group.status === "done" && onCrossListStatusChange && (
+        <CrossListPanel
+          group={group}
+          photoById={photoById}
+          onCrossListStatusChange={onCrossListStatusChange}
+        />
       )}
     </article>
   );
