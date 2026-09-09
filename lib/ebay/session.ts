@@ -16,7 +16,9 @@ export const EBAY_STATE_COOKIE = "ebay_oauth_state";
 export const EBAY_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
 
 const CONNECTION_FILE = join(
-  process.env.HOME || "/root",
+  // Vercel's filesystem is read-only except /tmp, which is ephemeral but
+  // at least writable within a single function invocation's lifetime.
+  process.env.VERCEL ? "/tmp" : process.env.HOME || "/root",
   "ebay-lister-connection"
 );
 

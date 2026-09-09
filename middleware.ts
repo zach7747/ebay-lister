@@ -24,6 +24,7 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Match all paths except static files and Next internals
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Match all paths except static files, Next internals, AND the eBay OAuth
+  // callback (eBay's browser redirect can't carry Basic Auth credentials).
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/ebay/callback).*)"],
 };
