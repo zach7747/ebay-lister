@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { apiPost } from "@/lib/api-client";
+import { apiGet, apiPost } from "@/lib/api-client";
 import { resizeImage } from "@/lib/resize";
 import { buildSku } from "@/lib/sku";
 import { EbayConnect } from "./EbayConnect";
 import { ReviewBoard } from "./ReviewBoard";
 import { ListingsView } from "./ListingsView";
-import { saveSession, loadSession, clearSession } from "@/lib/persist";
+import { saveSession, loadSession, clearSession, syncServerPhotos, pruneServerPhotos } from "@/lib/persist";
 import type {
   AnalyzeResponse,
   ItemGroup,
@@ -30,6 +30,11 @@ function newId(): string {
     : `id-${Math.floor(performance.now() * 1000)}-${Math.random()}`;
 }
 
+function newPhotoId(batch: string): string {
+  const unique = newId().replace(/[^A-Za-z0-9]/g, "");
+  return `id-${batch}-${unique}`;
+}
+
 // Parse a fetch response as JSON, but turn non-JSON error bodies (e.g. a 413
 // "Request Entity Too Large" plain-text page) into a friendly message instead
 // of a cryptic "Unexpected token" error.
@@ -43,6 +48,25 @@ async function readJson(res: Response): Promise<any> {
         "That was too much photo data to send at once. Try sorting fewer photos per batch."
       );
     }
+
+    // Reverse proxies (Cloudflare, Vercel, etc.) return branded HTML pages for
+    // gateway failures and timeouts. Never print that markup into the listing
+    // card; it is both unreadable and can be very long on a small screen.
+    const contentType = res.headers.get("content-type")?.toLowerCase() ?? "";
+    const looksLikeHtml =
+      contentType.includes("text/html") ||
+      /^\s*(?:<!doctype\s+html|<html\b)/i.test(text);
+    if (looksLikeHtml) {
+      if ([502, 503, 504, 522, 523, 524].includes(res.status)) {
+        throw new Error(
+          "The publish request timed out before eBay responded. Wait a moment, then try again."
+        );
+      }
+      throw new Error(
+        `The server returned an unexpected page (${res.status || "unknown status"}). Try again.`
+      );
+    }
+
     throw new Error(
       text.trim().slice(0, 140) || `Request failed (${res.status}).`
     );
@@ -87,8 +111,9 @@ export default function Home() {
     restoredRef.current = true;
     loadSession().then((saved) => {
       if (!saved) return;
-      // Only restore if saved within the last 24 hours.
-      if (Date.now() - saved.savedAt > 24 * 60 * 60 * 1000) {
+      // Only restore if saved within the last 30 days. Photos now live on the
+      // server too, so an old draft is fully resumable, not just a skeleton.
+      if (Date.now() - saved.savedAt > 30 * 24 * 60 * 60 * 1000) {
         clearSession();
         return;
       }
@@ -115,6 +140,8 @@ export default function Home() {
         orphanIds,
         savedAt: Date.now(),
       });
+      // Mirror blobs to the server so any device can resume this draft.
+      void syncServerPhotos(photos);
     }, 500);
     return () => clearTimeout(saveTimer.current);
   }, [photos, binPrefix, step, groups, orphanIds]);
@@ -148,22 +175,24 @@ export default function Home() {
   // Load custom listing instructions from server.
   useEffect(() => {
     if (instructionsLoaded.current) return;
-    instructionsLoaded.current = true;
-    fetch("/api/instructions")
+    apiGet("/api/instructions")
       .then((r) => r.json())
-      .then((d) => { if (d.text) setCustomInstructions(d.text); })
-      .catch(() => {});
+      .then((d) => {
+        if (typeof d.text === "string" && d.text) setCustomInstructions(d.text);
+      })
+      .catch(() => {})
+      .finally(() => {
+        // Do not let the save effect overwrite the server value while this
+        // initial request is still in flight.
+        instructionsLoaded.current = true;
+      });
   }, []);
 
   // Save custom instructions to server (debounced).
   useEffect(() => {
     if (!instructionsLoaded.current) return;
     const t = setTimeout(() => {
-      fetch("/api/instructions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: customInstructions }),
-      }).catch(() => {});
+      apiPost("/api/instructions", { text: customInstructions }).catch(() => {});
     }, 1000);
     return () => clearTimeout(t);
   }, [customInstructions]);
@@ -179,8 +208,11 @@ export default function Home() {
     }
     try {
       const resized = await Promise.all(files.map(resizeImage));
+      // Photos selected together share one server-storage batch. This keeps a
+      // 100-photo import to one sync request instead of one request per UUID.
+      const batch = newId().replace(/[^A-Za-z0-9]/g, "").slice(0, 16);
       setPhotos((prev) =>
-        [...prev, ...resized.map((r) => ({ id: newId(), ...r }))].slice(
+        [...prev, ...resized.map((r) => ({ id: newPhotoId(batch), ...r }))].slice(
           0,
           MAX_PHOTOS
         )
@@ -190,8 +222,10 @@ export default function Home() {
     }
   }, []);
 
-  const removePhoto = (id: string) =>
+  const removePhoto = (id: string) => {
     setPhotos((prev) => prev.filter((p) => p.id !== id));
+    void pruneServerPhotos([id]);
+  };
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -301,10 +335,25 @@ export default function Home() {
       // Snapshot this group's photos from the latest state (no stale closure).
       const group = groupsRef.current.find((g) => g.id === groupId);
       if (!group) return;
-      const imgs = group.photoIds
+      const found = group.photoIds
         .map((id) => photoMap.get(id))
-        .filter((p): p is Photo => Boolean(p))
-        .map((p) => ({ mediaType: p.mediaType, data: p.data }));
+        .filter((p): p is Photo => Boolean(p));
+      const imgs = found.map((p) => ({
+        mediaType: p.mediaType,
+        // Prefer the full-res bytes; fall back to the thumbnail when only that
+        // survived a restore (better analysis quality but still usable).
+        data: p.data || (p.previewUrl.includes(",") ? p.previewUrl.split(",")[1] : ""),
+      }));
+      if (imgs.length === 0) {
+        setGroups((prev) =>
+          prev.map((g) =>
+            g.id === groupId
+              ? { ...g, status: "error", error: `This item's ${group.photoIds.length} photos are missing from this device. Re-upload them to write the listing.` }
+              : g
+          )
+        );
+        return;
+      }
       setGroups((prev) =>
         prev.map((g) =>
           g.id === groupId ? { ...g, status: "writing", error: undefined } : g
@@ -376,10 +425,35 @@ export default function Home() {
     async (groupId: string) => {
       const group = groupsRef.current.find((g) => g.id === groupId);
       if (!group || !group.listing) return;
-      const images = group.photoIds
+      const found = group.photoIds
         .map((id) => photoMap.get(id))
-        .filter((p): p is Photo => Boolean(p))
-        .map((p) => ({ mediaType: p.mediaType, data: p.data }));
+        .filter((p): p is Photo => Boolean(p));
+      const images = found
+        .map((p) => ({
+          mediaType: p.mediaType,
+          // Prefer full-res bytes; fall back to the thumbnail when a restore
+          // only rehydrated what the preview had available.
+          data: p.data || (p.previewUrl.includes(",") ? p.previewUrl.split(",")[1] : ""),
+        }))
+        .filter((i) => i.data);
+      // Exact failure: never let the server's 400 masquerade as "Missing SKU,
+      // listing, or photos." when what's actually absent is this device's copy
+      // of the photo blobs.
+      if (images.length === 0) {
+        const missing = group.photoIds.slice(0, 3).join(", ");
+        setGroups((prev) =>
+          prev.map((g) =>
+            g.id === groupId
+              ? {
+                  ...g,
+                  postStatus: "error",
+                  postError: `This item's ${group.photoIds.length} photos aren't available on this device (e.g. ${missing}). Re-upload them on this device, or post from the device where you took the photos.`,
+                }
+              : g
+          )
+        );
+        return;
+      }
       setGroups((prev) =>
         prev.map((g) =>
           g.id === groupId ? { ...g, postStatus: "posting", postError: undefined } : g
@@ -646,8 +720,8 @@ export default function Home() {
       <div className="security-notice">
         <span className="security-icon" aria-hidden="true">🛡️</span>
         <p>
-          Your photos are sent securely to sort and write listings, and are not
-          stored. Your data stays private.
+          Photos are kept on this device and mirrored to your private server
+          session so the draft survives across devices. Nothing is shared.
         </p>
       </div>
     </main>

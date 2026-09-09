@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { logError } from "@/lib/logger";
-import { guardApiRequest } from "@/lib/api-guard";
+import { guardApiRequest, rateLimitRequest } from "@/lib/api-guard";
 import { readFileSync, statSync } from "fs";
 import { join } from "path";
 
@@ -11,15 +11,23 @@ const LOG_PATH = join(process.env.HOME || "/root", "ebay-lister.log");
 
 export const dynamic = "force-dynamic";
 
-// POST — client error reporter sends errors here (no auth needed, it's internal).
+function bounded(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.slice(0, max);
+}
+
+// POST stays reachable before an access code has been entered, but is rate
+// limited and bounded so arbitrary clients cannot turn the log into a disk sink.
 export async function POST(req: NextRequest) {
+  const limited = rateLimitRequest(req);
+  if (limited) return limited;
   try {
     const body = await req.json();
-    logError("client", body.message || "Unknown client error", undefined, {
-      source: body.source,
-      line: body.line,
-      col: body.col,
-      stack: body.stack,
+    logError("client", bounded(body?.message, 1000) || "Unknown client error", undefined, {
+      source: bounded(body?.source, 500),
+      line: Number.isFinite(body?.line) ? body.line : undefined,
+      col: Number.isFinite(body?.col) ? body.col : undefined,
+      stack: bounded(body?.stack, 8000),
     });
   } catch {
     // swallow

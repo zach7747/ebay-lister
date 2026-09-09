@@ -151,51 +151,65 @@ export function ListingCard({
 
   return (
     <article className={`listing-card status-${group.status}`}>
-      <header className="listing-card-head" onClick={() => setOpen((o) => !o)}>
-        {cover && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img className="listing-cover" src={cover.previewUrl} alt="" />
-        )}
-        <div className="listing-card-title">
-          <strong>
-            {group.sku && <span className="sku-tag">{group.sku}</span>}
-            {listing?.title || group.name}
-          </strong>
-          <span className="listing-card-sub">
-            {group.status === "writing" && (
-              <span className="write-step-label">{stepLabel}</span>
-            )}
-            {group.status === "done" && (
-              <>✅ {formatPrice(listing?.suggested_price)} · ready</>
-            )}
-            {group.status === "error" && (
-              <span style={{ color: "var(--color-danger)" }}>
-                ⚠️ {group.error || "Failed"}
-              </span>
-            )}
-            {group.status === "idle" && "Waiting…"}
+      <header className="listing-card-head">
+        <button
+          type="button"
+          className="listing-card-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {cover && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img className="listing-cover" src={cover.previewUrl} alt="" />
+          )}
+          <span className="listing-card-title">
+            <strong>
+              {group.sku && <span className="sku-tag">{group.sku}</span>}
+              {listing?.title || group.name}
+            </strong>
+            <span className="listing-card-sub">
+              {group.status === "writing" && (
+                <span className="write-step-label">{stepLabel}</span>
+              )}
+              {group.status === "done" && (
+                <>✅ {formatPrice(listing?.suggested_price)} · ready</>
+              )}
+              {group.status === "error" && (
+                <span style={{ color: "var(--color-danger)" }}>
+                  ⚠️ {group.error || "Failed"}
+                </span>
+              )}
+              {group.status === "idle" && "Waiting…"}
+            </span>
           </span>
-        </div>
+          {group.status !== "error" && (
+            <span className="chevron" aria-hidden="true">
+              {open ? "▾" : "▸"}
+            </span>
+          )}
+        </button>
         {group.status === "error" ? (
           <button
             type="button"
             className="btn-ghost"
             onClick={(e) => {
-              e.stopPropagation();
               onRetry(group.id);
             }}
           >
             ↻ Retry
           </button>
-        ) : (
-          <span className="chevron" aria-hidden="true">
-            {open ? "▾" : "▸"}
-          </span>
-        )}
+        ) : null}
       </header>
 
       {(group.status === "writing" || (group.status === "done" && pct > 0)) && (
-        <div className="write-progress-track">
+        <div
+          className="write-progress-track"
+          role="progressbar"
+          aria-label="Listing writing progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={group.status === "writing" ? undefined : pct}
+        >
           <div
             className={`write-progress-bar${group.status === "done" ? " done" : ""}`}
             style={{ width: `${pct}%` }}

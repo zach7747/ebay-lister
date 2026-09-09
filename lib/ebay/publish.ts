@@ -108,7 +108,7 @@ const ASPECT_DEFAULTS: Record<string, string> = {
   "Heel Height": "Flat", "Toe Shape": "Round", Adjustable: "Yes",
   "Exterior Pockets": "Yes", Lining: "Lined", Hood: "No Hood", "Bag Closure": "Zip",
   "Strap Type": "Adjustable", "Hat Style": "Baseball Cap", "Brim Style": "Curved Bill",
-  "Size Type": "Regular", Size: "Regular", Style: "Casual", Department: "Unisex Adult",
+  "Size Type": "Regular", Style: "Casual", Department: "Unisex Adult",
   Type: "Item", Brand: "Unbranded", Color: "Multicolor", Material: "Mixed Materials",
 };
 
@@ -261,6 +261,32 @@ function pickDepartment(allowed: string[], listing: ListingResult, catKey: strin
   return allowed[0] || "";
 }
 
+function pickSizeType(allowed: string[], listing: ListingResult): string {
+  const explicit = String(listing.item_specifics?.["Size Type"] || "").trim();
+  const explicitMatch = matchAllowed(explicit, allowed);
+  if (explicitMatch) return explicitMatch;
+
+  const size = String(listing.size || listing.item_specifics?.Size || "").trim();
+  const normalized = size.toLowerCase().replace(/\s+/g, " ");
+  const preferences: string[] = [];
+
+  if (/\b(maternity|pregnan)/.test(normalized)) preferences.push("Maternity");
+  if (/\b(big\s*(?:&|and)\s*tall|b&t)\b/.test(normalized)) preferences.push("Big & Tall", "Big and Tall");
+  if (/\b(tall|long)\b|\d+t\b/.test(normalized)) preferences.push("Tall", "Long");
+  if (/\b(petite|short)\b|\d+p\b/.test(normalized)) preferences.push("Petite", "Short");
+  if (/\b(plus|curve)\b|(?:^|\s)(?:[1-9]x(?:l)?|xxl|xxxl|xxxxl)(?:\s|$)/.test(normalized)) {
+    preferences.push("Plus", "Plus Size");
+  }
+  if (/\b(junior|juniors)\b/.test(normalized)) preferences.push("Juniors", "Junior");
+  preferences.push("Regular");
+
+  for (const preference of preferences) {
+    const match = matchAllowed(preference, allowed);
+    if (match) return match;
+  }
+  return allowed[0] || "";
+}
+
 function freeTextDefault(name: string, listing: ListingResult): string {
   const n = name.toLowerCase();
   if (n.includes("brand")) return String(listing.brand || "").trim() || "Unbranded";
@@ -280,6 +306,7 @@ function reconcileAspects(
     const current = aspects[a.name]?.[0];
     if (a.mode === "SELECTION_ONLY") {
       const canonical = matchAllowed(current || "", a.values) ||
+        (a.name === "Size Type" ? pickSizeType(a.values, listing) : "") ||
         matchAllowed(ASPECT_DEFAULTS[a.name] || "", a.values) ||
         (a.name === "Department" ? pickDepartment(a.values, listing, catKey) : "") ||
         a.values[0] || "";

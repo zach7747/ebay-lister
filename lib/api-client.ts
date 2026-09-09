@@ -41,25 +41,52 @@ async function doFetch(path: string, body: unknown, code: string | null): Promis
   return fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
-/**
- * POST to an API route, handling the access-code handshake. Prompts the user
- * for the code when the server requires one (or when a saved code went stale).
- */
-export async function apiPost(path: string, body: unknown): Promise<Response> {
-  let code = storedCode();
-  let res = await doFetch(path, body, code);
+async function doGet(path: string, code: string | null): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (code) headers["x-app-secret"] = code;
+  return fetch(path, { headers, cache: "no-store" });
+}
 
-  // Up to two prompt attempts: covers both "no code yet" and "wrong code".
-  for (let attempt = 0; attempt < 2 && res.status === 401; attempt++) {
+async function needsAccessCode(res: Response): Promise<boolean> {
+  if (res.status !== 401) return false;
+  try {
+    const data = (await res.clone().json()) as { code?: unknown };
+    return data.code === "ACCESS_CODE_REQUIRED";
+  } catch {
+    return false;
+  }
+}
+
+async function withAccessCode(
+  request: (code: string | null) => Promise<Response>
+): Promise<Response> {
+  let code = storedCode();
+  let res = await request(code);
+
+  // Only the app guard's explicit challenge should open this prompt. Other
+  // 401s (for example, an expired eBay connection) belong to their caller.
+  for (let attempt = 0; attempt < 2 && (await needsAccessCode(res)); attempt++) {
     const entered = window.prompt(
       attempt === 0
         ? "This app is protected. Enter the access code for this deployment:"
         : "That code wasn't right — try again:"
     );
-    if (!entered || !entered.trim()) return res; // user cancelled — surface the 401
+    if (!entered || !entered.trim()) return res;
     code = entered.trim();
-    res = await doFetch(path, body, code);
-    if (res.status !== 401) saveCode(code);
+    res = await request(code);
+    if (!(await needsAccessCode(res))) saveCode(code);
   }
   return res;
+}
+
+/**
+ * POST to an API route, handling the access-code handshake. Prompts the user
+ * for the code when the server requires one (or when a saved code went stale).
+ */
+export async function apiPost(path: string, body: unknown): Promise<Response> {
+  return withAccessCode((code) => doFetch(path, body, code));
+}
+
+export async function apiGet(path: string): Promise<Response> {
+  return withAccessCode((code) => doGet(path, code));
 }

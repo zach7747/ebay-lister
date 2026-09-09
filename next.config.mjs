@@ -42,7 +42,10 @@ const nextConfig = {
               "default-src 'self'",
               // Next.js inlines runtime scripts/styles; tighten to nonces if needed.
               "script-src 'self' 'unsafe-inline'",
-              "style-src 'self' 'unsafe-inline'",
+              // The layout loads Inter from Google Fonts. Allow its stylesheet
+              // and the font files it references; otherwise browsers reject it.
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              "font-src 'self' https://fonts.gstatic.com",
               // blob:/data: for in-browser photo resizing previews
               "img-src 'self' data: blob: https://i.ebayimg.com",
               "connect-src 'self'",

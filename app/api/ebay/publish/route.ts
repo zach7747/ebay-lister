@@ -20,9 +20,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: "Invalid request." }, { status: 400 });
   }
 
-  if (!body.sku || !body.listing || !Array.isArray(body.images) || body.images.length === 0) {
+  // Field-by-field validation: the old combined message ("Missing SKU,
+// listing, or photos.") hid the real cause — typically empty images when a
+// restored session had no photo blobs on the current device.
+  if (!body.sku) {
     return NextResponse.json(
-      { success: false, error: "Missing SKU, listing, or photos." },
+      { success: false, error: "Missing SKU — this item has no bin code yet. Edit the SKU and post again." },
+      { status: 400 }
+    );
+  }
+  if (!body.listing) {
+    return NextResponse.json(
+      { success: false, error: "Missing listing data — the listing hasn't been written yet. Generate it, then post." },
+      { status: 400 }
+    );
+  }
+  if (!Array.isArray(body.images) || body.images.length === 0) {
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          "No photos reached the server. The draft's photo bytes aren't on this device — re-upload them here, or post from the device where you took the photos.",
+      },
       { status: 400 }
     );
   }
@@ -52,7 +71,10 @@ export async function POST(req: NextRequest) {
     } else {
       logError("/api/ebay/publish", `Publish failed for SKU ${body.sku}: ${result.error}`);
     }
-    return NextResponse.json(result, { status: result.success ? 200 : 502 });
+    // A structured eBay validation rejection is a client-facing listing error,
+    // not a bad-gateway response. Some proxies replace 502 bodies with HTML,
+    // which made the UI incorrectly report these as request timeouts.
+    return NextResponse.json(result, { status: result.success ? 200 : 422 });
   } catch (e) {
     logError("/api/ebay/publish", `Publish error for SKU ${body.sku}`, e);
     return NextResponse.json(

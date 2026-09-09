@@ -16,7 +16,7 @@ import crypto from "crypto";
  */
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 60;
+const RATE_LIMIT_MAX_REQUESTS = 300;
 
 // Per-serverless-instance limiter. Not a global guarantee (each warm lambda
 // has its own map), but it blunts burst abuse at zero infra cost.
@@ -26,6 +26,27 @@ function timingSafeEqual(a: string, b: string): boolean {
   const ha = crypto.createHash("sha256").update(a).digest();
   const hb = crypto.createHash("sha256").update(b).digest();
   return crypto.timingSafeEqual(ha, hb);
+}
+
+function hasValidBasicAuth(req: NextRequest): boolean {
+  const expectedUser = process.env.APP_USER;
+  const expectedPass = process.env.APP_PASS;
+  const authorization = req.headers.get("authorization");
+  if (!expectedUser || !expectedPass || !authorization?.startsWith("Basic ")) {
+    return false;
+  }
+
+  try {
+    const decoded = Buffer.from(authorization.slice(6), "base64").toString("utf8");
+    const separator = decoded.indexOf(":");
+    if (separator < 0) return false;
+    return (
+      timingSafeEqual(decoded.slice(0, separator), expectedUser) &&
+      timingSafeEqual(decoded.slice(separator + 1), expectedPass)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function clientIp(req: NextRequest): string {
@@ -67,9 +88,26 @@ export function guardApiRequest(req: NextRequest): NextResponse | null {
   const limited = rateLimitRequest(req);
   if (limited) return limited;
 
+  // Middleware already requires HTTP Basic Auth when APP_USER/APP_PASS are
+  // configured. Treat that login as API authorization too, avoiding a second
+  // access-code prompt for the same private deployment.
+  if (hasValidBasicAuth(req)) return null;
+
   const secret = process.env.APP_SECRET;
   if (!secret) {
-    return null; // No secret configured = open access
+    const deployed =
+      process.env.NODE_ENV === "production" ||
+      process.env.VERCEL_ENV === "production";
+    if (deployed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "This deployment is missing APP_SECRET. Configure it before using the API.",
+        },
+        { status: 503 }
+      );
+    }
+    return null;
   }
 
   const provided = req.headers.get("x-app-secret") ?? "";
