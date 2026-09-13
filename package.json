@@ -11,6 +11,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
     "file-saver": "^2.0.5",
     "jszip": "^3.10.1",
     "next": "^15.5.4",
