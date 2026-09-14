@@ -25,6 +25,10 @@ export interface ListingResult {
 export interface AnalyzeRequestBody {
   // Browser-resized JPEG data URLs or raw base64 strings.
   images: { mediaType: string; data: string }[];
+  // Blob pathnames (from /api/photo-upload) when the photos were stored in
+  // Vercel Blob instead of sent inline. When present and non-empty the
+  // analyze route fetches each ref from the private store.
+  photoRefs?: string[];
   profile: string;
   customInstructions?: string;
 }

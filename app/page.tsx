@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api-client";
 import { resizeImage } from "@/lib/resize";
 import { fitAnalysisPayload } from "@/lib/payload-budget";
+import { uploadPhotoJobs } from "@/lib/photo-jobs";
 import { buildSku } from "@/lib/sku";
 import { EbayConnect } from "./EbayConnect";
 import { ReviewBoard } from "./ReviewBoard";
@@ -361,11 +362,40 @@ export default function Home() {
         )
       );
       try {
-        // Shrink/sample the photos down to a payload that survives Vercel's
-        // 4.5 MB function body limit. Same shape ({mediaType, data}[]), so
-        // nothing downstream changes — we just send fewer/smaller photos.
-        imgs = await fitAnalysisPayload(imgs);
-        const res = await apiPost("/api/analyze", { profile: "auto", images: imgs, customInstructions });
+        // Transport decision. A small set of photos goes inline — exactly
+        // today's behaviour, still budgeted by fitAnalysisPayload. A large
+        // set (40+ photos, ~15 MB of base64) would blow Vercel's 4.5 MB
+        // function body cap, so we split the FULL-resolution photos into
+        // small upload jobs stored in Vercel Blob and analyze by ref —
+        // nothing is ever shrunk to fit the cap. If the blob upload fails or
+        // is unavailable we fall back to the pre-existing shrunk inline path.
+        const inlineBodySize = JSON.stringify({
+          profile: "auto",
+          images: imgs,
+          customInstructions,
+        }).length;
+
+        let res: Response;
+        if (inlineBodySize <= 3_200_000) {
+          // Comfortably under the cap — current behaviour.
+          imgs = await fitAnalysisPayload(imgs);
+          res = await apiPost("/api/analyze", { profile: "auto", images: imgs, customInstructions });
+        } else {
+          const pathnames = await uploadPhotoJobs(groupId, imgs);
+          if (pathnames) {
+            // Every batch stored → analyze by ref, no images array.
+            res = await apiPost("/api/analyze", {
+              profile: "auto",
+              customInstructions,
+              photoRefs: pathnames,
+            });
+          } else {
+            // Blob upload failed/unavailable — fall back to the shrunk
+            // inline path (the pre-existing behaviour).
+            imgs = await fitAnalysisPayload(imgs);
+            res = await apiPost("/api/analyze", { profile: "auto", images: imgs, customInstructions });
+          }
+        }
         const data = (await readJson(res)) as AnalyzeResponse;
         if (!data.ok || !data.listing) {
           throw new Error(data.error || "Could not write this listing.");

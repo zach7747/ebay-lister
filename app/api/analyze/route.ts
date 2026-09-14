@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type OpenAI from "openai";
 import { getClient, parseModelJson, LLMAuthError, llmAuthError } from "@/lib/llm";
-import { guardApiRequest, safeErrorResponse } from "@/lib/api-guard";
+import { guardApiRequest } from "@/lib/api-guard";
 import {
   PROFILE_ROUTER_PROMPT,
   buildProfiledAnalysisPrompt,
@@ -9,6 +9,7 @@ import {
 } from "@/lib/prompts";
 import { toImageBlock, type ImageBlock, type ChatContentPart } from "@/lib/images";
 import { logError, logInfo } from "@/lib/logger";
+import { get, del } from "@vercel/blob";
 import type { AnalyzeRequestBody, ListingResult } from "@/lib/types";
 
 // Analysis can take 20-40s for a multi-photo item. Give it room.
@@ -81,17 +82,71 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!Array.isArray(body.images) || body.images.length === 0) {
-    return NextResponse.json(
-      { ok: false, error: "Please add at least one photo." },
-      { status: 400 }
-    );
+  const refList = Array.isArray(body.photoRefs)
+    ? body.photoRefs.filter(
+        (r): r is string => typeof r === "string" && r.length > 0
+      )
+    : [];
+  const hasInline = Array.isArray(body.images) && body.images.length > 0;
+
+  // Count of photoRefs successfully fetched from blob storage. Always present
+  // in the JSON response (success and failure paths) so the transport can be
+  // verified with curl: refsResolved > 0 proves the blob was read end-to-end.
+  let refsResolved = 0;
+
+  let imageBlocks: ImageBlock[];
+  if (refList.length > 0) {
+    // Pull each photo from the private blob store at FULL resolution. The
+    // client split the photos into these small upload jobs precisely so no
+    // single /api/analyze request body ever approaches the 4.5 MB cap.
+    const resolved: { mediaType: string; data: string }[] = [];
+    for (const ref of refList) {
+      try {
+        const result = await get(ref, { access: "private", useCache: false });
+        if (result && result.statusCode === 200 && result.stream) {
+          const bytes = await new Response(result.stream).arrayBuffer();
+          resolved.push({
+            mediaType: "image/jpeg",
+            data: Buffer.from(bytes).toString("base64"),
+          });
+        }
+      } catch (e) {
+        logError("/api/analyze", `Failed to fetch blob ref ${ref}`, e);
+      }
+    }
+    refsResolved = resolved.length;
+
+    // Best-effort cleanup: these blobs are one-shot, so delete them right after
+    // they are read. Cleanup must never affect the response.
+    try {
+      if (refList.length > 0) await del(refList);
+    } catch (e) {
+      logError("/api/analyze", "Blob cleanup after analyze failed", e);
+    }
+
+    imageBlocks = toImageBlocks(resolved);
+    // If every ref failed to resolve, fall back to the inline images path
+    // rather than hard-failing just because the refs broke.
+    if (imageBlocks.length === 0 && hasInline) {
+      imageBlocks = toImageBlocks(body.images);
+    }
+  } else {
+    if (!hasInline) {
+      return NextResponse.json(
+        { ok: false, error: "Please add at least one photo." },
+        { status: 400 }
+      );
+    }
+    imageBlocks = toImageBlocks(body.images);
   }
 
-  const imageBlocks = toImageBlocks(body.images);
   if (imageBlocks.length === 0) {
     return NextResponse.json(
-      { ok: false, error: "No readable photos found. Use JPG, PNG, or WebP." },
+      {
+        ok: false,
+        error: "No readable photos found. Use JPG, PNG, or WebP.",
+        refsResolved,
+      },
       { status: 400 }
     );
   }
@@ -145,7 +200,7 @@ export async function POST(req: NextRequest) {
         const listing = parseModelJson<ListingResult>(firstText(resp));
         listing.item_profile = profile;
         logInfo("/api/analyze", `Listing written: "${listing.title}"`);
-        return NextResponse.json({ ok: true, listing });
+        return NextResponse.json({ ok: true, listing, refsResolved });
       } catch (err) {
         const fatal = llmAuthError(err);
         if (fatal) throw fatal;
@@ -160,9 +215,23 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     if (e instanceof LLMAuthError) {
       logError("/api/analyze", `Auth/billing failure: ${e.message}`, e);
-      return NextResponse.json({ ok: false, error: e.message }, { status: e.status });
+      return NextResponse.json(
+        { ok: false, error: e.message, refsResolved },
+        { status: e.status }
+      );
     }
     logError("/api/analyze", "Analysis failed after retries", e);
-    return safeErrorResponse("analyze", e, "Something went wrong analyzing photos — please try again.");
+    // Inlined (was safeErrorResponse) so refsResolved rides along on this
+    // failure path too — it is the transport proof that blobs were read even
+    // when the LLM call itself errors.
+    console.error("[analyze]", e);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Something went wrong analyzing photos — please try again.",
+        refsResolved,
+      },
+      { status: 500 }
+    );
   }
 }
