@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api-client";
 import { resizeImage } from "@/lib/resize";
+import { fitAnalysisPayload } from "@/lib/payload-budget";
 import { buildSku } from "@/lib/sku";
 import { EbayConnect } from "./EbayConnect";
 import { ReviewBoard } from "./ReviewBoard";
@@ -338,7 +339,7 @@ export default function Home() {
       const found = group.photoIds
         .map((id) => photoMap.get(id))
         .filter((p): p is Photo => Boolean(p));
-      const imgs = found.map((p) => ({
+      let imgs = found.map((p) => ({
         mediaType: p.mediaType,
         // Prefer the full-res bytes; fall back to the thumbnail when only that
         // survived a restore (better analysis quality but still usable).
@@ -360,6 +361,10 @@ export default function Home() {
         )
       );
       try {
+        // Shrink/sample the photos down to a payload that survives Vercel's
+        // 4.5 MB function body limit. Same shape ({mediaType, data}[]), so
+        // nothing downstream changes — we just send fewer/smaller photos.
+        imgs = await fitAnalysisPayload(imgs);
         const res = await apiPost("/api/analyze", { profile: "auto", images: imgs, customInstructions });
         const data = (await readJson(res)) as AnalyzeResponse;
         if (!data.ok || !data.listing) {

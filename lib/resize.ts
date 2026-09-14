@@ -53,6 +53,39 @@ function scaleDown(w: number, h: number, max: number) {
   return { width: Math.round(w * ratio), height: Math.round(h * ratio) };
 }
 
+// Re-encode a stored base64 JPEG (NO data: prefix) at a smaller
+// dimension/quality and return the new base64 (no prefix). Unlike
+// resizeImage, this works from the stored string alone — the original File is
+// long gone after a session restore, so we decode the base64 itself via a
+// data URL. Any failure (bad decode, no canvas, no 2d context) returns the
+// input unchanged so the caller degrades gracefully.
+export async function shrinkDataUrl(
+  data: string,
+  maxDim: number,
+  quality: number
+): Promise<string> {
+  if (!data) return data;
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("Could not decode image."));
+      el.src = `data:image/jpeg;base64,${data}`;
+    });
+    const { width, height } = scaleDown(img.naturalWidth, img.naturalHeight, maxDim);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return data;
+    ctx.drawImage(img, 0, 0, width, height);
+    const out = canvas.toDataURL("image/jpeg", quality);
+    return out.includes(",") ? out.split(",")[1] : data;
+  } catch {
+    return data;
+  }
+}
+
 async function loadBitmap(file: File): Promise<ImageBitmap | HTMLImageElement> {
   if (typeof createImageBitmap === "function") {
     try {
